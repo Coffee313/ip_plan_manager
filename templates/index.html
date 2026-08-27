@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>IP Plan Manager</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-title">IP Plan Manager</div>
+      <div id="sourceName" class="brand-subtitle">Excel не загружен</div>
+    </div>
+    <div class="toolbar">
+      <select id="projectSelect" class="project-select" aria-label="Проект">
+        <option value="">Выберите проект</option>
+      </select>
+      <button id="newProjectBtn" class="btn secondary">+ Проект</button>
+      <button id="renameProjectBtn" class="btn secondary">Переименовать</button>
+      <button id="deleteProjectBtn" class="btn danger-outline">Удалить проект</button>
+      <span id="syncStatus" class="sync-status">Нет проекта</span>
+
+      <span class="toolbar-separator"></span>
+
+      <label id="importLabel" class="btn secondary">
+        Импорт Excel
+        <input id="fileInput" type="file" accept=".xlsx,.xlsm" hidden>
+      </label>
+      <a id="exportBtn" class="btn secondary" href="#">Экспорт Excel</a>
+      <button id="addSiteBtn" class="btn secondary">+ Площадка</button>
+      <button id="addSubnetBtn" class="btn primary">+ Подсеть</button>
+      <input id="searchInput" class="search" placeholder="Поиск по IP, VLAN, описанию">
+    </div>
+  </header>
+
+  <div class="app-layout">
+    <aside class="sidebar">
+      <div class="sidebar-title">Площадки</div>
+      <div id="siteNav"></div>
+      <div class="legend">
+        <div><span class="legend-box subnet-box"></span>Подсеть</div>
+        <div><span class="legend-box host-box"></span>IP хоста / интерфейса</div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div id="loading" class="empty-card">Загрузка…</div>
+      <div id="sites"></div>
+    </main>
+  </div>
+
+  <dialog id="projectDialog" class="modal small-modal">
+    <form method="dialog" id="projectForm">
+      <div class="modal-header">
+        <div>
+          <h2 id="projectDialogTitle">Новый проект</h2>
+          <p id="projectDialogHint">Каждый проект хранит собственный независимый IP-план.</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="projectDialog">×</button>
+      </div>
+
+      <div class="field full">
+        <label>Название проекта *</label>
+        <input id="projectName" required maxlength="120" placeholder="Storck">
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="projectDialog">Отмена</button>
+        <button type="submit" class="btn primary" id="projectSubmitBtn">Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="siteDialog" class="modal small-modal">
+    <form method="dialog" id="siteForm">
+      <div class="modal-header">
+        <div>
+          <h2>Новая площадка</h2>
+          <p>Создайте корневую сеть площадки, после этого внутри нее можно добавлять подсети.</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="siteDialog">×</button>
+      </div>
+
+      <div class="form-grid">
+        <div class="field"><label>Название *</label><input id="siteName" required placeholder="Moscow Office"></div>
+        <div class="field"><label>CIDR *</label><input id="siteCIDR" required placeholder="172.17.0.0/16"></div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="siteDialog">Отмена</button>
+        <button type="submit" class="btn primary">Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="subnetDialog" class="modal">
+    <form method="dialog" id="subnetForm">
+      <div class="modal-header">
+        <div>
+          <h2 id="subnetDialogTitle">Подсеть</h2>
+          <p id="subnetDialogHint"></p>
+        </div>
+        <button type="button" class="icon-btn" data-close="subnetDialog">×</button>
+      </div>
+
+      <div id="parentWrap" class="field full">
+        <label>Родительская сеть</label>
+        <select id="parentSelect" size="8"></select>
+      </div>
+
+      <div class="form-grid">
+        <div class="field"><label>CIDR *</label><input id="subnetCIDR" required placeholder="172.17.10.0/24"></div>
+        <div class="field"><label>Gateway</label><input id="subnetGateway" placeholder="172.17.10.1"></div>
+        <div class="field"><label>VRF</label><input id="subnetVRF"></div>
+        <div class="field"><label>VLAN Number</label><input id="subnetVLAN" type="number" min="1" max="4094"></div>
+        <div class="field"><label>VLAN Name</label><input id="subnetVLANName"></div>
+        <div class="field"><label>Zone</label><input id="subnetZone"></div>
+        <div class="field"><label>Site</label><input id="subnetSite"></div>
+        <div class="field full"><label>Comment</label><textarea id="subnetComment" rows="2"></textarea></div>
+        <div class="field full"><label>Subnet description</label><textarea id="subnetDescription" rows="2"></textarea></div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="subnetDialog">Отмена</button>
+        <button type="submit" class="btn primary" id="saveSubnetBtn">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="hostDialog" class="modal">
+    <form method="dialog" id="hostForm">
+      <div class="modal-header">
+        <div>
+          <h2 id="hostDialogTitle">IP хоста / интерфейса</h2>
+          <p id="hostDialogHint"></p>
+        </div>
+        <button type="button" class="icon-btn" data-close="hostDialog">×</button>
+      </div>
+
+      <div class="form-grid">
+        <div class="field">
+          <label>IP *</label>
+          <div class="ip-composite">
+            <span id="hostIPPrefix" class="ip-prefix"></span>
+            <input id="hostIP" required inputmode="decimal" autocomplete="off">
+          </div>
+        </div>
+        <div class="field"><label>Имя</label><input id="hostName"></div>
+        <div class="field"><label>Подсистема</label><input id="hostSubsystem"></div>
+        <div class="field"><label>Роль</label><input id="hostRole"></div>
+        <div class="field"><label>CPU</label><input id="hostCPU"></div>
+        <div class="field"><label>RAM</label><input id="hostRAM"></div>
+        <div class="field"><label>HDD/SSD</label><input id="hostDisk"></div>
+        <div class="field"><label>Тип оборудования</label><input id="hostType"></div>
+        <div class="field"><label>Статус</label><input id="hostStatus"></div>
+        <div class="field full"><label>Comment</label><textarea id="hostComment" rows="2"></textarea></div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="hostDialog">Отмена</button>
+        <button type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="hostInfoDialog" class="modal host-info-modal">
+    <form id="hostInfoForm" method="dialog" class="host-info-shell">
+      <div class="modal-header">
+        <div>
+          <h2 id="hostInfoTitle">Информация о хосте</h2>
+          <p id="hostInfoHint"></p>
+        </div>
+        <button type="button" class="icon-btn" data-close="hostInfoDialog">×</button>
+      </div>
+
+      <div class="host-info-grid editable">
+        <div class="host-info-item">
+          <label>IP</label>
+          <div class="ip-composite host-info-ip">
+            <span id="infoHostIPPrefix" class="ip-prefix"></span>
+            <input id="infoHostIP" inputmode="decimal" autocomplete="off">
+          </div>
+        </div>
+
+        <div class="host-info-item readonly">
+          <label>Подсеть</label>
+          <div id="infoHostSubnet" class="host-info-readonly mono">—</div>
+        </div>
+
+        <div class="host-info-item readonly">
+          <label>Site</label>
+          <div id="infoHostSite" class="host-info-readonly">—</div>
+        </div>
+
+        <div class="host-info-item">
+          <label>Подсистема</label>
+          <input id="infoHostSubsystem">
+        </div>
+
+        <div class="host-info-item">
+          <label>Имя сервера</label>
+          <input id="infoHostName">
+        </div>
+
+        <div class="host-info-item">
+          <label>Серверная роль</label>
+          <input id="infoHostRole">
+        </div>
+
+        <div class="host-info-item">
+          <label>CPU</label>
+          <input id="infoHostCPU">
+        </div>
+
+        <div class="host-info-item">
+          <label>RAM</label>
+          <input id="infoHostRAM">
+        </div>
+
+        <div class="host-info-item">
+          <label>HDD/SSD</label>
+          <input id="infoHostDisk">
+        </div>
+
+        <div class="host-info-item">
+          <label>Тип оборудования</label>
+          <input id="infoHostType">
+        </div>
+
+        <div class="host-info-item">
+          <label>Статус развертывания</label>
+          <input id="infoHostStatus">
+        </div>
+
+        <div class="host-info-item full">
+          <label>Comment</label>
+          <textarea id="infoHostComment" rows="3"></textarea>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="hostInfoDialog">Отмена</button>
+        <button type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toast" class="toast"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
