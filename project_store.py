@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import json
 import os
+import secrets
 import shutil
 import uuid
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
-from filelock import FileLock, Timeout
+from filelock import FileLock
 
 from ipplan_core import Workspace
 
@@ -28,6 +33,63 @@ class ProjectConflict(RuntimeError):
             "Проект уже изменен другим пользователем. "
             "Данные будут обновлены, повторите изменение."
         )
+
+
+class ProjectAccessDenied(ValueError):
+    pass
+
+
+def validate_pin(pin: str) -> str:
+    value = str(pin or "")
+    if len(value) != 4 or not value.isascii() or not value.isdigit():
+        raise ValueError("PIN должен содержать ровно четыре цифры")
+    return value
+
+
+def hash_pin(pin: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        validate_pin(pin).encode("ascii"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    )
+    return "$".join(
+        [
+            "scrypt",
+            "16384",
+            "8",
+            "1",
+            base64.urlsafe_b64encode(salt).decode("ascii"),
+            base64.urlsafe_b64encode(digest).decode("ascii"),
+        ]
+    )
+
+
+def verify_pin(pin: str, encoded: str) -> bool:
+    try:
+        algorithm, n, r, p, salt_text, digest_text = encoded.split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        actual = hashlib.scrypt(
+            validate_pin(pin).encode("ascii"),
+            salt=salt,
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def token_hash(token: str) -> str:
+    return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
 class ProjectStore:
@@ -67,13 +129,24 @@ class ProjectStore:
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
 
+    @staticmethod
+    def _public_meta(meta: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": meta["id"],
+            "name": meta["name"],
+            "created_at": meta.get("created_at"),
+            "updated_at": meta.get("updated_at"),
+            "revision": int(meta.get("revision", 0)),
+            "pin_set": bool(meta.get("pin_hash")),
+        }
+
     def _ensure_unique_name(self, name: str, exclude_id: str | None = None) -> None:
         normalized = name.casefold()
         for project in self.list_projects():
             if project["id"] != exclude_id and project["name"].casefold() == normalized:
                 raise ValueError(f"Проект «{name}» уже существует")
 
-    def list_projects(self) -> list[dict[str, Any]]:
+    def list_projects(self, strict: bool = False) -> list[dict[str, Any]]:
         projects: list[dict[str, Any]] = []
         if not self.projects_root.exists():
             return projects
@@ -83,19 +156,26 @@ class ProjectStore:
                 continue
             try:
                 meta = self._read_meta_unlocked(project_dir)
-                projects.append(meta)
+                if meta.get("id") != project_dir.name:
+                    raise ValueError(
+                        f"ID проекта в {project_dir / 'project.json'} не совпадает с каталогом"
+                    )
+                projects.append(self._public_meta(meta))
             except Exception:
+                if strict:
+                    raise
                 continue
 
         projects.sort(key=lambda p: (p.get("name", "").casefold(), p.get("created_at", "")))
         return projects
 
-    def create_project(self, name: str) -> dict[str, Any]:
+    def create_project(self, name: str, pin: str) -> tuple[dict[str, Any], str]:
         name = str(name or "").strip()
         if not name:
             raise ValueError("Укажите название проекта")
         if len(name) > 120:
             raise ValueError("Название проекта слишком длинное")
+        pin = validate_pin(pin)
 
         with self.registry_lock:
             self._ensure_unique_name(name)
@@ -110,11 +190,50 @@ class ProjectStore:
                 "created_at": now,
                 "updated_at": now,
                 "revision": 0,
+                "pin_hash": hash_pin(pin),
+                "access_token_hashes": [],
             }
+            access_token = secrets.token_urlsafe(32)
+            meta["access_token_hashes"].append(token_hash(access_token))
 
             Workspace(project_dir).save()
             self._write_meta_unlocked(project_dir, meta)
-            return meta
+            return self._public_meta(meta), access_token
+
+    def verify_access(self, project_id: str, token: str) -> None:
+        if not token:
+            raise ProjectAccessDenied("Требуется PIN проекта")
+        with self.project_lock(project_id):
+            meta = self._read_meta_unlocked(self.project_dir(project_id))
+            candidate = token_hash(token)
+            if not any(
+                hmac.compare_digest(candidate, stored)
+                for stored in meta.get("access_token_hashes", [])
+            ):
+                raise ProjectAccessDenied("Нет доступа к проекту")
+
+    def unlock_project(self, project_id: str, pin: str) -> dict[str, Any]:
+        pin = validate_pin(pin)
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+
+            # Projects from versions without PIN support are claimed on their
+            # first unlock inside the trusted company network.
+            if not meta.get("pin_hash"):
+                meta["pin_hash"] = hash_pin(pin)
+            elif not verify_pin(pin, meta["pin_hash"]):
+                raise ProjectAccessDenied("Неверный PIN")
+
+            access_token = secrets.token_urlsafe(32)
+            hashes = list(meta.get("access_token_hashes", []))
+            hashes.append(token_hash(access_token))
+            meta["access_token_hashes"] = hashes
+            self._write_meta_unlocked(project_dir, meta)
+            return {
+                "project": self._public_meta(meta),
+                "access_token": access_token,
+            }
 
     def rename_project(self, project_id: str, name: str) -> dict[str, Any]:
         name = str(name or "").strip()
@@ -132,7 +251,7 @@ class ProjectStore:
                 meta["updated_at"] = utc_now()
                 meta["revision"] = int(meta.get("revision", 0)) + 1
                 self._write_meta_unlocked(project_dir, meta)
-                return meta
+                return self._public_meta(meta)
 
     def delete_project(self, project_id: str) -> None:
         with self.registry_lock:
@@ -189,10 +308,6 @@ class ProjectStore:
 
             workspace = self._workspace_unlocked(project_dir)
             result = callback(workspace)
-
-            # Workspace mutators save themselves. Calling save again is intentional:
-            # it guarantees persistence for future callbacks that only modify fields.
-            workspace.save()
 
             meta["revision"] = current_revision + 1
             meta["updated_at"] = utc_now()

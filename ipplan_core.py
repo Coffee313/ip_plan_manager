@@ -12,7 +12,6 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import column_index_from_string
 
-
 BASE_DIR = Path(__file__).resolve().parent
 DEFAULT_DATA_DIR = BASE_DIR / "data"
 SAMPLE_DIR = BASE_DIR / "sample"
@@ -44,14 +43,20 @@ def normalize_row(values: list[Any]) -> list[Any]:
 
 def parse_network(value: str) -> ipaddress.IPv4Network:
     try:
-        return ipaddress.ip_network(value.strip(), strict=False)
+        network = ipaddress.ip_network(value.strip(), strict=False)
+        if not isinstance(network, ipaddress.IPv4Network):
+            raise ValueError("Ожидается сеть IPv4")
+        return network
     except Exception as exc:
-        raise ValueError(f"Некорректный CIDR: {value}") from exc
+        raise ValueError(f"Некорректный CIDR IPv4: {value}") from exc
 
 
 def parse_ip(value: str) -> ipaddress.IPv4Address:
     try:
-        return ipaddress.ip_address(value.strip())
+        address = ipaddress.ip_address(value.strip())
+        if not isinstance(address, ipaddress.IPv4Address):
+            raise ValueError("Ожидается адрес IPv4")
+        return address
     except Exception as exc:
         raise ValueError(f"Некорректный IPv4-адрес: {value}") from exc
 
@@ -205,17 +210,16 @@ class Workspace:
                 if candidate.exists():
                     self.source_path = str(candidate)
             return True
-        except Exception:
-            return False
+        except Exception as exc:
+            raise ValueError(
+                f"Файл состояния проекта поврежден: {self.state_file}"
+            ) from exc
 
     # ---------- import ----------
     def import_file(self, file_bytes: bytes, filename: str) -> None:
         ext = Path(filename).suffix.lower()
         if ext not in {".xlsx", ".xlsm"}:
             raise ValueError("Поддерживаются файлы .xlsx и .xlsm")
-
-        source_path = self.data_dir / f"source{ext}"
-        source_path.write_bytes(file_bytes)
 
         wb = load_workbook(
             io.BytesIO(file_bytes),
@@ -225,7 +229,6 @@ class Workspace:
         ws = wb["IP Plan"] if "IP Plan" in wb.sheetnames else wb[wb.sheetnames[0]]
 
         self.source_filename = filename
-        self.source_path = str(source_path)
         self.source_ext = ext
         self.sheet_name = ws.title
         self.sites = []
@@ -292,6 +295,14 @@ class Workspace:
             "subnet": subnet_template or root_rows[0] + 1,
             "host": host_template or (subnet_template or root_rows[0] + 1) + 1,
         }
+
+        # Do not replace the last known-good source until the workbook has been
+        # fully parsed and validated. A malformed upload must leave export usable.
+        source_path = self.data_dir / f"source{ext}"
+        source_tmp = source_path.with_suffix(f"{ext}.tmp")
+        source_tmp.write_bytes(file_bytes)
+        source_tmp.replace(source_path)
+        self.source_path = str(source_path)
         self.save()
 
     def load_default_if_needed(self) -> None:
@@ -349,8 +360,20 @@ class Workspace:
 
     def tree_for_site(self, site: dict[str, Any]) -> list[dict[str, Any]]:
         children: dict[str, list[dict[str, Any]]] = {}
+        site_net = parse_network(site["cidr"])
+        subnet_by_network = {
+            parse_network(subnet["cidr"]): subnet for subnet in site["subnets"]
+        }
         for subnet in site["subnets"]:
-            parent_id = self.subnet_parent_id(site, subnet)
+            target = parse_network(subnet["cidr"])
+            parent_id = site["id"]
+            candidate = target
+            while candidate.prefixlen > site_net.prefixlen + 1:
+                candidate = candidate.supernet()
+                parent = subnet_by_network.get(candidate)
+                if parent is not None:
+                    parent_id = parent["id"]
+                    break
             children.setdefault(parent_id, []).append(subnet)
 
         def key(node: dict[str, Any]) -> tuple[int, int]:

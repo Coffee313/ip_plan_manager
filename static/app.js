@@ -1,6 +1,13 @@
 let state = null;
 let projects = [];
 let currentProjectId = localStorage.getItem("ipPlanManager.projectId") || "";
+const projectTokensStorageKey = "ipPlanManager.projectTokens";
+let projectTokens = {};
+try {
+  projectTokens = JSON.parse(localStorage.getItem(projectTokensStorageKey) || "{}") || {};
+} catch (_) {
+  projectTokens = {};
+}
 let projectRevision = null;
 let pendingRemoteRevision = null;
 let projectDialogMode = "create";
@@ -15,8 +22,21 @@ const collapsed = new Set();
 
 const $ = (id) => document.getElementById(id);
 
-function isProjectApi(url) {
-  return url.startsWith("/api/projects");
+function saveProjectTokens() {
+  localStorage.setItem(projectTokensStorageKey, JSON.stringify(projectTokens));
+}
+
+function currentProjectToken() {
+  return projectTokens[currentProjectId] || "";
+}
+
+function forgetProjectToken(projectId) {
+  delete projectTokens[projectId];
+  saveProjectTokens();
+}
+
+function requestNeedsProjectAccess(url) {
+  return url !== "/api/projects" && !url.endsWith("/unlock");
 }
 
 function isMutation(options = {}) {
@@ -28,8 +48,11 @@ async function api(url, options = {}) {
   const fetchOptions = {...options};
   const headers = new Headers(options.headers || {});
 
-  if (currentProjectId && !isProjectApi(url)) {
+  if (currentProjectId && requestNeedsProjectAccess(url)) {
     headers.set("X-Project-ID", currentProjectId);
+    if (currentProjectToken()) {
+      headers.set("X-Project-Token", currentProjectToken());
+    }
     if (isMutation(options) && projectRevision !== null) {
       headers.set("X-Project-Revision", String(projectRevision));
     }
@@ -42,6 +65,9 @@ async function api(url, options = {}) {
   try { body = await res.json(); } catch (_) {}
 
   if (!res.ok || !body?.ok) {
+    if (res.status === 403 && currentProjectId) {
+      forgetProjectToken(currentProjectId);
+    }
     if (res.status === 409) {
       // Keep our old revision. This is important: a stale editor must not be
       // allowed to retry with the new revision and overwrite a colleague's data.
@@ -82,6 +108,12 @@ function updateSyncStatus(message = "") {
   if (!currentProjectId) {
     el.textContent = "Нет проекта";
     el.className = "sync-status";
+    return;
+  }
+
+  if (!currentProjectToken()) {
+    el.textContent = "Требуется PIN";
+    el.className = "sync-status pending";
     return;
   }
 
@@ -149,22 +181,23 @@ async function loadProjects(preferredId = null) {
 
 function updateProjectControls() {
   const hasProject = !!currentProjectId;
+  const hasAccess = hasProject && !!currentProjectToken();
 
-  $("renameProjectBtn").disabled = !hasProject;
-  $("deleteProjectBtn").disabled = !hasProject;
-  $("addSiteBtn").disabled = !hasProject;
-  $("importLabel").classList.toggle("disabled", !hasProject);
+  $("renameProjectBtn").disabled = !hasAccess;
+  $("deleteProjectBtn").disabled = !hasAccess;
+  $("addSiteBtn").disabled = !hasAccess;
+  $("importLabel").classList.toggle("disabled", !hasAccess);
 
-  if (!hasProject) {
+  if (!hasAccess) {
     $("addSubnetBtn").disabled = true;
     $("searchInput").disabled = true;
     $("exportBtn").classList.add("disabled");
     $("exportBtn").setAttribute("aria-disabled", "true");
-    $("exportBtn").href = "#";
+    $("exportBtn").disabled = true;
   } else {
     $("exportBtn").classList.remove("disabled");
     $("exportBtn").setAttribute("aria-disabled", "false");
-    $("exportBtn").href = `/api/export?project_id=${encodeURIComponent(currentProjectId)}`;
+    $("exportBtn").disabled = false;
   }
 
   updateSyncStatus();
@@ -182,6 +215,9 @@ function openProjectDialog(mode = "create") {
     : "Каждый проект хранит собственный независимый IP-план.";
   $("projectSubmitBtn").textContent = mode === "rename" ? "Сохранить" : "Создать";
   $("projectName").value = mode === "rename" ? project.name : "";
+  $("projectPIN").value = "";
+  $("projectPIN").required = mode !== "rename";
+  $("projectPINWrap").style.display = mode === "rename" ? "none" : "";
 
   $("projectDialog").showModal();
   $("projectName").focus();
@@ -205,11 +241,14 @@ async function saveProject(e) {
       render();
       toast("Проект переименован");
     } else {
-      const project = await api("/api/projects", {
+      const created = await api("/api/projects", {
         method: "POST",
         headers: {"Content-Type":"application/json"},
-        body: JSON.stringify({name})
+        body: JSON.stringify({name, pin: $("projectPIN").value.trim()})
       });
+      const project = created.project;
+      projectTokens[project.id] = created.access_token;
+      saveProjectTokens();
       $("projectDialog").close();
       await loadProjects(project.id);
       await openProject(project.id);
@@ -217,6 +256,38 @@ async function saveProject(e) {
     }
   } catch (e) {
     toast(e.message, true);
+  }
+}
+
+function showUnlockDialog() {
+  const project = currentProject();
+  if (!project) return;
+  $("unlockDialogTitle").textContent = project.pin_set
+    ? `Открыть проект · ${project.name}`
+    : `Задать PIN · ${project.name}`;
+  $("unlockPIN").value = "";
+  if (!$("unlockDialog").open) $("unlockDialog").showModal();
+  $("unlockPIN").focus();
+}
+
+async function unlockProject(e) {
+  e.preventDefault();
+  if (!currentProjectId) return;
+  try {
+    const result = await api(`/api/projects/${currentProjectId}/unlock`, {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({pin: $("unlockPIN").value.trim()})
+    });
+    projectTokens[currentProjectId] = result.access_token;
+    saveProjectTokens();
+    $("unlockDialog").close();
+    await loadProjects(currentProjectId);
+    await refresh();
+    toast("Проект открыт. Доступ сохранен в этом браузере.");
+  } catch (err) {
+    toast(err.message, true);
+    $("unlockPIN").select();
   }
 }
 
@@ -240,7 +311,23 @@ async function openProject(projectId) {
   $("projectSelect").value = projectId;
   collapsed.clear();
   updateProjectControls();
-  await refresh();
+  if (!currentProjectToken()) {
+    state = null;
+    render();
+    showUnlockDialog();
+    return;
+  }
+  try {
+    await refresh();
+  } catch (err) {
+    if (!currentProjectToken()) {
+      state = null;
+      render();
+      showUnlockDialog();
+      return;
+    }
+    throw err;
+  }
 }
 
 async function deleteCurrentProject() {
@@ -251,6 +338,7 @@ async function deleteCurrentProject() {
 
   try {
     await api(`/api/projects/${project.id}`, {method:"DELETE"});
+    forgetProjectToken(project.id);
     state = null;
     currentProjectId = "";
     projectRevision = null;
@@ -265,13 +353,24 @@ async function deleteCurrentProject() {
 }
 
 async function pollProjectRevision() {
-  if (!currentProjectId || document.hidden) return;
+  if (!currentProjectId || !currentProjectToken() || document.hidden) return;
 
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(currentProjectId)}/revision`, {
-      cache: "no-store"
+      cache: "no-store",
+      headers: {
+        "X-Project-ID": currentProjectId,
+        "X-Project-Token": currentProjectToken()
+      }
     });
     const body = await res.json();
+    if (res.status === 403) {
+      forgetProjectToken(currentProjectId);
+      state = null;
+      render();
+      showUnlockDialog();
+      return;
+    }
     if (res.status === 404) {
       const deletedName = currentProject()?.name || "Проект";
       currentProjectId = "";
@@ -395,6 +494,22 @@ function render() {
         </div>
       </div>`;
     $("emptyNewProjectBtn").onclick = () => openProjectDialog("create");
+    return;
+  }
+
+  if (!currentProjectToken()) {
+    const project = currentProject();
+    $("sourceName").textContent = project?.name || "Проект закрыт";
+    updateProjectControls();
+    sitesEl.innerHTML = `
+      <div class="empty-card project-start">
+        <strong>Требуется PIN проекта</strong>
+        <div style="margin-top:8px">После первого ввода доступ сохранится в этом браузере.</div>
+        <div class="empty-start-actions">
+          <button class="btn primary" id="emptyUnlockProjectBtn">Ввести PIN</button>
+        </div>
+      </div>`;
+    $("emptyUnlockProjectBtn").onclick = showUnlockDialog;
     return;
   }
 
@@ -1249,6 +1364,38 @@ async function importExcel(file) {
   } catch (e) { toast(e.message, true); }
 }
 
+async function exportExcel() {
+  if (!currentProjectId || !currentProjectToken()) return;
+  try {
+    const response = await fetch("/api/export", {
+      headers: {
+        "X-Project-ID": currentProjectId,
+        "X-Project-Token": currentProjectToken()
+      }
+    });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const utf8Name = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+    const plainName = disposition.match(/filename="?([^";]+)"?/i)?.[1];
+    const filename = utf8Name ? decodeURIComponent(utf8Name) : (plainName || "IP_Plan.xlsx");
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    toast(err.message, true);
+  }
+}
+
 async function refresh() {
   if (!currentProjectId) {
     state = null;
@@ -1289,6 +1436,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("renameProjectBtn").onclick = () => openProjectDialog("rename");
   $("deleteProjectBtn").onclick = deleteCurrentProject;
   $("projectForm").onsubmit = saveProject;
+  $("unlockForm").onsubmit = unlockProject;
   $("projectSelect").onchange = async e => {
     try {
       await openProject(e.target.value);
@@ -1312,6 +1460,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     e.target.value = "";
   };
+  $("exportBtn").onclick = exportExcel;
 
   $("searchInput").oninput = applySearch;
   $("siteForm").onsubmit = createSite;
@@ -1340,7 +1489,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await loadProjects(remembered);
 
     if (currentProjectId) {
-      await refresh();
+      await openProject(currentProjectId);
     } else {
       render();
     }

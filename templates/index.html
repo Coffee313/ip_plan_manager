@@ -27,7 +27,7 @@
         Импорт Excel
         <input id="fileInput" type="file" accept=".xlsx,.xlsm" hidden>
       </label>
-      <a id="exportBtn" class="btn secondary" href="#">Экспорт Excel</a>
+      <button id="exportBtn" class="btn secondary" type="button">Экспорт Excel</button>
       <button id="addSiteBtn" class="btn secondary">+ Площадка</button>
       <button id="addSubnetBtn" class="btn primary">+ Подсеть</button>
       <input id="searchInput" class="search" placeholder="Поиск по IP, VLAN, описанию">
@@ -65,9 +65,38 @@
         <input id="projectName" required maxlength="120" placeholder="Storck">
       </div>
 
+      <div id="projectPINWrap" class="field full">
+        <label>PIN проекта *</label>
+        <input id="projectPIN" required inputmode="numeric" autocomplete="new-password"
+               pattern="[0-9]{4}" minlength="4" maxlength="4" placeholder="4 цифры">
+      </div>
+
       <div class="modal-actions">
         <button type="button" class="btn secondary" data-close="projectDialog">Отмена</button>
         <button type="submit" class="btn primary" id="projectSubmitBtn">Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="unlockDialog" class="modal small-modal">
+    <form method="dialog" id="unlockForm">
+      <div class="modal-header">
+        <div>
+          <h2 id="unlockDialogTitle">Открыть проект</h2>
+          <p>PIN потребуется только один раз в этом браузере.</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="unlockDialog">×</button>
+      </div>
+
+      <div class="field full">
+        <label>PIN проекта *</label>
+        <input id="unlockPIN" required inputmode="numeric" autocomplete="current-password"
+               pattern="[0-9]{4}" minlength="4" maxlength="4" placeholder="4 цифры">
+      </div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="unlockDialog">Отмена</button>
+        <button type="submit" class="btn primary">Открыть</button>
       </div>
     </form>
   </dialog>
