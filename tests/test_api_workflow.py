@@ -8,8 +8,14 @@ from app import create_app
 from project_store import ProjectStore
 
 
-def auth_headers(project_id: str, token: str, revision: int | None = None):
-    headers = {"X-Project-ID": project_id, "X-Project-Token": token}
+def auth_headers(
+    project_id: str, token: str, user_token: str, revision: int | None = None
+):
+    headers = {
+        "X-Project-ID": project_id,
+        "X-Project-Token": token,
+        "X-User-Token": user_token,
+    }
     if revision is not None:
         headers["X-Project-Revision"] = str(revision)
     return headers
@@ -17,21 +23,26 @@ def auth_headers(project_id: str, token: str, revision: int | None = None):
 
 def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    user_token = client.post("/api/users", json={"name": "Редактор"}).get_json()[
+        "data"
+    ]["access_token"]
     created = client.post(
-        "/api/projects", json={"name": "Проект", "pin": "1234"}
+        "/api/projects",
+        json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": user_token},
     ).get_json()["data"]
     project_id = created["project"]["id"]
     token = created["access_token"]
 
     state_response = client.get(
-        "/api/state", headers=auth_headers(project_id, token)
+        "/api/state", headers=auth_headers(project_id, token, user_token)
     )
     revision = state_response.get_json()["revision"]
 
     site_response = client.post(
         "/api/sites",
         json={"name": "Москва", "cidr": "10.0.0.0/16"},
-        headers=auth_headers(project_id, token, revision),
+        headers=auth_headers(project_id, token, user_token, revision),
     )
     site_id = site_response.get_json()["data"]["id"]
     revision = site_response.get_json()["revision"]
@@ -44,7 +55,7 @@ def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
             "gateway": "10.0.10.1",
             "vlan_number": "10",
         },
-        headers=auth_headers(project_id, token, revision),
+        headers=auth_headers(project_id, token, user_token, revision),
     )
     subnet_id = subnet_response.get_json()["data"]["id"]
     stale_revision = revision
@@ -53,14 +64,14 @@ def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
     host_response = client.post(
         f"/api/subnets/{subnet_id}/hosts",
         json={"ip": "10.0.10.20", "name": "server"},
-        headers=auth_headers(project_id, token, revision),
+        headers=auth_headers(project_id, token, user_token, revision),
     )
     assert host_response.status_code == 200
 
     conflict = client.post(
         f"/api/subnets/{subnet_id}/hosts",
         json={"ip": "10.0.10.21", "name": "stale"},
-        headers=auth_headers(project_id, token, stale_revision),
+        headers=auth_headers(project_id, token, user_token, stale_revision),
     )
     assert conflict.status_code == 409
 

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import shutil
 import sys
@@ -18,7 +20,11 @@ def _validated_members(archive: zipfile.ZipFile) -> tuple[dict, list[zipfile.Zip
         path = PurePosixPath(member.filename)
         if path.is_absolute() or ".." in path.parts or "\\" in member.filename:
             raise ValueError(f"Архив содержит недопустимый путь: {member.filename}")
-        if path.parts and path.parts[0] not in {"manifest.json", "projects"}:
+        if path.parts and path.parts[0] not in {
+            "manifest.json",
+            "users.json",
+            "projects",
+        }:
             raise ValueError(f"Архив содержит недопустимый путь: {member.filename}")
 
     try:
@@ -45,13 +51,38 @@ def _validated_members(archive: zipfile.ZipFile) -> tuple[dict, list[zipfile.Zip
     if manifest.get("complete") is not True:
         raise ValueError("Нельзя восстановить неполный бэкап")
 
+    users_included = manifest.get("users_included") is True
+    names = {member.filename for member in members if not member.is_dir()}
+    if users_included:
+        if "users.json" not in names:
+            raise ValueError("В бэкапе отсутствует users.json")
+        users_bytes = archive.read("users.json")
+        expected_users_hash = manifest.get("users_sha256")
+        actual_users_hash = hashlib.sha256(users_bytes).hexdigest()
+        if not isinstance(expected_users_hash, str) or not hmac.compare_digest(
+            actual_users_hash, expected_users_hash
+        ):
+            raise ValueError("Контрольная сумма users.json не совпадает")
+        try:
+            users_payload = json.loads(users_bytes)
+        except json.JSONDecodeError as exc:
+            raise ValueError("Некорректный users.json") from exc
+        users = users_payload.get("users")
+        if not isinstance(users, list) or any(
+            not isinstance(user, dict)
+            or not isinstance(user.get("id"), str)
+            or not isinstance(user.get("name"), str)
+            or not isinstance(user.get("token_hash"), str)
+            for user in users
+        ):
+            raise ValueError("Некорректный users.json")
+
     project_ids = manifest.get("project_ids")
     if not isinstance(project_ids, list) or any(
         not isinstance(project_id, str) for project_id in project_ids
     ):
         raise ValueError("Некорректный список проектов в manifest.json")
 
-    names = {member.filename for member in members if not member.is_dir()}
     archived_project_ids = {
         parts[1]
         for name in names
@@ -99,7 +130,14 @@ def restore_backup(backup: Path, store: ProjectStore | None = None) -> int:
             staged_root.mkdir()
             for member in members:
                 parts = PurePosixPath(member.filename).parts
-                if member.is_dir() or not parts or parts[0] != "projects":
+                if member.is_dir() or not parts:
+                    continue
+                if parts[0] == "users.json":
+                    destination = Path(tmp) / "users.json"
+                    with archive.open(member) as source, destination.open("wb") as target:
+                        shutil.copyfileobj(source, target)
+                    continue
+                if parts[0] != "projects":
                     continue
                 destination = Path(tmp).joinpath(*parts)
                 destination.parent.mkdir(parents=True, exist_ok=True)
@@ -107,20 +145,37 @@ def restore_backup(backup: Path, store: ProjectStore | None = None) -> int:
                     shutil.copyfileobj(source, target)
 
             rollback = store.data_root / f".projects-rollback-{uuid.uuid4().hex}"
-            with store.registry_lock:
+            rollback_users = store.data_root / f".users-rollback-{uuid.uuid4().hex}.json"
+            staged_users = Path(tmp) / "users.json"
+            with store.registry_lock, store.users_lock:
                 moved_old = False
+                moved_users = False
+                installed_projects = False
                 try:
                     if store.projects_root.exists():
                         store.projects_root.rename(rollback)
                         moved_old = True
                     staged_root.rename(store.projects_root)
+                    installed_projects = True
+                    if manifest.get("users_included") is True:
+                        if store.users_path.exists():
+                            store.users_path.rename(rollback_users)
+                            moved_users = True
+                        staged_users.rename(store.users_path)
                 except Exception:
-                    if moved_old and rollback.exists() and not store.projects_root.exists():
+                    if store.users_path.exists() and manifest.get("users_included") is True:
+                        store.users_path.unlink()
+                    if moved_users and rollback_users.exists():
+                        rollback_users.rename(store.users_path)
+                    if installed_projects and store.projects_root.exists():
+                        shutil.rmtree(store.projects_root)
+                    if moved_old and rollback.exists():
                         rollback.rename(store.projects_root)
                     raise
                 else:
                     if rollback.exists():
                         shutil.rmtree(rollback)
+                    rollback_users.unlink(missing_ok=True)
 
     return int(manifest.get("project_count", len(manifest["project_ids"])))
 

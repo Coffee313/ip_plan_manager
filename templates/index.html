@@ -19,6 +19,8 @@
       <button id="newProjectBtn" class="btn secondary">+ Проект</button>
       <button id="renameProjectBtn" class="btn secondary">Переименовать</button>
       <button id="deleteProjectBtn" class="btn danger-outline">Удалить проект</button>
+      <button id="auditBtn" class="btn secondary" type="button">Журнал</button>
+      <button id="userProfileBtn" class="btn secondary" type="button">Пользователь</button>
       <span id="syncStatus" class="sync-status">Нет проекта</span>
 
       <span class="toolbar-separator"></span>
@@ -44,11 +46,43 @@
       </div>
     </aside>
 
-    <main class="content">
+    <main class="content" id="project-root">
       <div id="loading" class="empty-card">Загрузка…</div>
       <div id="sites"></div>
     </main>
   </div>
+
+  <aside id="auditPanel" class="audit-panel" aria-hidden="true">
+    <div class="audit-header">
+      <div>
+        <h2>Журнал изменений</h2>
+        <p>Все изменения текущего проекта</p>
+      </div>
+      <button id="closeAuditBtn" class="icon-btn" type="button" aria-label="Закрыть журнал">×</button>
+    </div>
+    <div id="auditList" class="audit-list"></div>
+  </aside>
+
+  <dialog id="userDialog" class="modal small-modal">
+    <form method="dialog" id="userForm">
+      <div class="modal-header">
+        <div>
+          <h2 id="userDialogTitle">Как вас зовут?</h2>
+          <p id="userDialogHint">Имя будет отображаться в журнале изменений.</p>
+        </div>
+        <button id="closeUserDialogBtn" type="button" class="icon-btn" data-close="userDialog">×</button>
+      </div>
+
+      <div class="field full">
+        <label>Ваше имя *</label>
+        <input id="userName" required maxlength="80" autocomplete="name" placeholder="Анна Петрова">
+      </div>
+
+      <div class="modal-actions">
+        <button type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="projectDialog" class="modal small-modal">
     <form method="dialog" id="projectForm">

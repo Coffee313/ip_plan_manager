@@ -78,6 +78,42 @@ def test_restore_replaces_projects_only_after_full_validation(tmp_path):
     assert project_names(target) == ["Restored"]
 
 
+def test_backup_restore_preserves_users_and_project_ownership(tmp_path):
+    source = ProjectStore(tmp_path / "source")
+    user, user_token = source.create_user("Владелец")
+    project, _ = source.create_project(
+        "Owned", "1234", user["id"], user["name"]
+    )
+    backup_path = create_backup(store=source)
+
+    target = ProjectStore(tmp_path / "target")
+    restore_backup(backup_path, target)
+
+    assert target.verify_user(user_token)["name"] == "Владелец"
+    assert target.is_creator(project["id"], user["id"])
+
+
+def test_restore_rejects_users_file_with_wrong_manifest_checksum(tmp_path):
+    source = ProjectStore(tmp_path / "source")
+    source.create_user("Исходный пользователь")
+    backup_path = create_backup(store=source)
+    tampered = tmp_path / "tampered-users.zip"
+
+    with zipfile.ZipFile(backup_path) as archive, zipfile.ZipFile(
+        tampered, "w", compression=zipfile.ZIP_DEFLATED
+    ) as changed:
+        for member in archive.infolist():
+            if member.is_dir():
+                changed.writestr(member, b"")
+            elif member.filename == "users.json":
+                changed.writestr(member, json.dumps({"users": []}))
+            else:
+                changed.writestr(member, archive.read(member.filename))
+
+    with pytest.raises(ValueError, match="users.json"):
+        restore_backup(tampered, ProjectStore(tmp_path / "target"))
+
+
 def test_restore_rejects_paths_outside_projects_directory(tmp_path):
     store = ProjectStore(tmp_path / "data")
     store.create_project("Current", "1234")

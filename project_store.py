@@ -39,6 +39,19 @@ class ProjectAccessDenied(ValueError):
     pass
 
 
+class UserAccessDenied(ValueError):
+    pass
+
+
+def validate_user_name(name: str) -> str:
+    value = " ".join(str(name or "").split())
+    if not value:
+        raise ValueError("Укажите имя пользователя")
+    if len(value) > 80:
+        raise ValueError("Имя пользователя слишком длинное")
+    return value
+
+
 def validate_pin(pin: str) -> str:
     value = str(pin or "")
     if len(value) != 4 or not value.isascii() or not value.isdigit():
@@ -98,9 +111,77 @@ class ProjectStore:
         self.data_root = Path(configured) if configured else Path(__file__).resolve().parent / "data"
         self.projects_root = self.data_root / "projects"
         self.backups_root = self.data_root / "backups"
+        self.users_path = self.data_root / "users.json"
         self.projects_root.mkdir(parents=True, exist_ok=True)
         self.backups_root.mkdir(parents=True, exist_ok=True)
         self.registry_lock = FileLock(str(self.data_root / ".projects.lock"), timeout=15)
+        self.users_lock = FileLock(str(self.data_root / ".users.lock"), timeout=15)
+
+    def _read_users_unlocked(self) -> list[dict[str, Any]]:
+        if not self.users_path.exists():
+            return []
+        payload = json.loads(self.users_path.read_text(encoding="utf-8"))
+        users = payload.get("users")
+        if not isinstance(users, list):
+            raise ValueError("Файл пользователей поврежден")
+        return users
+
+    def _write_users_unlocked(self, users: list[dict[str, Any]]) -> None:
+        tmp = self.users_path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"users": users}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(self.users_path)
+
+    @staticmethod
+    def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": user["id"],
+            "name": user["name"],
+            "created_at": user.get("created_at"),
+            "updated_at": user.get("updated_at"),
+        }
+
+    def create_user(self, name: str) -> tuple[dict[str, Any], str]:
+        name = validate_user_name(name)
+        access_token = secrets.token_urlsafe(32)
+        now = utc_now()
+        user = {
+            "id": uuid.uuid4().hex,
+            "name": name,
+            "token_hash": token_hash(access_token),
+            "created_at": now,
+            "updated_at": now,
+        }
+        with self.users_lock:
+            users = self._read_users_unlocked()
+            users.append(user)
+            self._write_users_unlocked(users)
+        return self._public_user(user), access_token
+
+    def verify_user(self, token: str) -> dict[str, Any]:
+        if not token:
+            raise UserAccessDenied("Сначала укажите свое имя")
+        candidate = token_hash(token)
+        with self.users_lock:
+            for user in self._read_users_unlocked():
+                if hmac.compare_digest(candidate, user.get("token_hash", "")):
+                    return self._public_user(user)
+        raise UserAccessDenied("Профиль пользователя не найден")
+
+    def update_user(self, token: str, name: str) -> dict[str, Any]:
+        name = validate_user_name(name)
+        candidate = token_hash(token)
+        with self.users_lock:
+            users = self._read_users_unlocked()
+            for user in users:
+                if hmac.compare_digest(candidate, user.get("token_hash", "")):
+                    user["name"] = name
+                    user["updated_at"] = utc_now()
+                    self._write_users_unlocked(users)
+                    return self._public_user(user)
+        raise UserAccessDenied("Профиль пользователя не найден")
 
     def project_dir(self, project_id: str) -> Path:
         if not project_id or any(ch not in "0123456789abcdef" for ch in project_id.lower()):
@@ -117,6 +198,10 @@ class ProjectStore:
     def _meta_path(project_dir: Path) -> Path:
         return project_dir / "project.json"
 
+    @staticmethod
+    def _audit_path(project_dir: Path) -> Path:
+        return project_dir / "audit.json"
+
     def _read_meta_unlocked(self, project_dir: Path) -> dict[str, Any]:
         path = self._meta_path(project_dir)
         if not path.exists():
@@ -128,6 +213,44 @@ class ProjectStore:
         tmp = path.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(path)
+
+    def _read_audit_unlocked(self, project_dir: Path) -> list[dict[str, Any]]:
+        path = self._audit_path(project_dir)
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise ValueError("Журнал проекта поврежден")
+        return events
+
+    def _append_audit_unlocked(
+        self,
+        project_dir: Path,
+        actor: dict[str, Any],
+        event: dict[str, Any],
+    ) -> dict[str, Any]:
+        events = self._read_audit_unlocked(project_dir)
+        stored = {
+            "id": uuid.uuid4().hex,
+            "timestamp": utc_now(),
+            "user_id": actor["id"],
+            "user_name": actor["name"],
+            "action": event["action"],
+            "description": event["description"],
+            "target_type": event["target_type"],
+            "target_id": event["target_id"],
+            "anchor": event["anchor"],
+        }
+        events.append(stored)
+        path = self._audit_path(project_dir)
+        tmp = path.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"events": events}, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        tmp.replace(path)
+        return stored
 
     @staticmethod
     def _public_meta(meta: dict[str, Any]) -> dict[str, Any]:
@@ -169,7 +292,13 @@ class ProjectStore:
         projects.sort(key=lambda p: (p.get("name", "").casefold(), p.get("created_at", "")))
         return projects
 
-    def create_project(self, name: str, pin: str) -> tuple[dict[str, Any], str]:
+    def create_project(
+        self,
+        name: str,
+        pin: str,
+        creator_user_id: str | None = None,
+        creator_user_name: str | None = None,
+    ) -> tuple[dict[str, Any], str]:
         name = str(name or "").strip()
         if not name:
             raise ValueError("Укажите название проекта")
@@ -192,12 +321,25 @@ class ProjectStore:
                 "revision": 0,
                 "pin_hash": hash_pin(pin),
                 "access_token_hashes": [],
+                "creator_user_id": creator_user_id,
             }
             access_token = secrets.token_urlsafe(32)
             meta["access_token_hashes"].append(token_hash(access_token))
 
             Workspace(project_dir).save()
             self._write_meta_unlocked(project_dir, meta)
+            if creator_user_id and creator_user_name:
+                self._append_audit_unlocked(
+                    project_dir,
+                    {"id": creator_user_id, "name": creator_user_name},
+                    {
+                        "action": "project_created",
+                        "description": f"создал(а) проект «{name}»",
+                        "target_type": "project",
+                        "target_id": project_id,
+                        "anchor": "project-root",
+                    },
+                )
             return self._public_meta(meta), access_token
 
     def verify_access(self, project_id: str, token: str) -> None:
@@ -212,24 +354,51 @@ class ProjectStore:
             ):
                 raise ProjectAccessDenied("Нет доступа к проекту")
 
-    def unlock_project(self, project_id: str, pin: str) -> dict[str, Any]:
+    def unlock_project(
+        self,
+        project_id: str,
+        pin: str,
+        user_id: str | None = None,
+        user_name: str | None = None,
+    ) -> dict[str, Any]:
         pin = validate_pin(pin)
         with self.project_lock(project_id):
             project_dir = self.project_dir(project_id)
             meta = self._read_meta_unlocked(project_dir)
 
+            pin_migrated = False
             if not meta.get("pin_hash"):
-                raise ProjectAccessDenied(
-                    "PIN проекта не настроен. Администратор должен задать его на сервере"
-                )
+                if pin != "1111":
+                    raise ProjectAccessDenied("Неверный PIN")
+                meta["pin_hash"] = hash_pin("1111")
+                pin_migrated = True
             if not verify_pin(pin, meta["pin_hash"]):
                 raise ProjectAccessDenied("Неверный PIN")
+
+            ownership_claimed = not meta.get("creator_user_id") and bool(user_id)
+            if ownership_claimed:
+                meta["creator_user_id"] = user_id
 
             access_token = secrets.token_urlsafe(32)
             hashes = list(meta.get("access_token_hashes", []))
             hashes.append(token_hash(access_token))
             meta["access_token_hashes"] = hashes
+            if pin_migrated or ownership_claimed:
+                meta["updated_at"] = utc_now()
+                meta["revision"] = int(meta.get("revision", 0)) + 1
             self._write_meta_unlocked(project_dir, meta)
+            if ownership_claimed and user_id and user_name:
+                self._append_audit_unlocked(
+                    project_dir,
+                    {"id": user_id, "name": user_name},
+                    {
+                        "action": "project_owner_assigned",
+                        "description": "стал(а) владельцем проекта",
+                        "target_type": "project",
+                        "target_id": project_id,
+                        "anchor": "project-root",
+                    },
+                )
             return {
                 "project": self._public_meta(meta),
                 "access_token": access_token,
@@ -245,7 +414,9 @@ class ProjectStore:
             meta["updated_at"] = utc_now()
             self._write_meta_unlocked(project_dir, meta)
 
-    def rename_project(self, project_id: str, name: str) -> dict[str, Any]:
+    def rename_project(
+        self, project_id: str, name: str, actor: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         name = str(name or "").strip()
         if not name:
             raise ValueError("Укажите название проекта")
@@ -261,18 +432,64 @@ class ProjectStore:
                 meta["updated_at"] = utc_now()
                 meta["revision"] = int(meta.get("revision", 0)) + 1
                 self._write_meta_unlocked(project_dir, meta)
+                if actor:
+                    self._append_audit_unlocked(
+                        project_dir,
+                        actor,
+                        {
+                            "action": "project_renamed",
+                            "description": f"переименовал(а) проект в «{name}»",
+                            "target_type": "project",
+                            "target_id": project_id,
+                            "anchor": "project-root",
+                        },
+                    )
                 return self._public_meta(meta)
 
-    def delete_project(self, project_id: str) -> None:
+    def is_creator(self, project_id: str, user_id: str) -> bool:
+        return self.get_meta(project_id).get("creator_user_id") == user_id
+
+    def claim_legacy_project_owner(
+        self, project_id: str, actor: dict[str, Any]
+    ) -> bool:
+        """Assign ownership once for projects created before user identities existed."""
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+            if meta.get("creator_user_id"):
+                return False
+            meta["creator_user_id"] = actor["id"]
+            meta["updated_at"] = utc_now()
+            meta["revision"] = int(meta.get("revision", 0)) + 1
+            self._write_meta_unlocked(project_dir, meta)
+            self._append_audit_unlocked(
+                project_dir,
+                actor,
+                {
+                    "action": "project_owner_assigned",
+                    "description": "стал(а) владельцем существующего проекта",
+                    "target_type": "project",
+                    "target_id": project_id,
+                    "anchor": "project-root",
+                },
+            )
+            return True
+
+    def delete_project(self, project_id: str, user_id: str) -> None:
         with self.registry_lock:
             project_dir = self.project_dir(project_id)
             lock = FileLock(str(project_dir / ".lock"), timeout=15)
             with lock:
+                meta = self._read_meta_unlocked(project_dir)
+                if meta.get("creator_user_id") != user_id:
+                    raise ProjectAccessDenied(
+                        "Удалить проект может только пользователь, который его создал"
+                    )
                 trash = self.data_root / ".trash"
                 trash.mkdir(exist_ok=True)
                 staged = trash / f"{project_id}-{uuid.uuid4().hex}"
                 project_dir.rename(staged)
-            shutil.rmtree(staged, ignore_errors=True)
+            shutil.rmtree(staged)
 
     def get_meta(self, project_id: str) -> dict[str, Any]:
         with self.project_lock(project_id):
@@ -302,11 +519,19 @@ class ProjectStore:
             state["revision"] = revision
             return state, revision
 
+    def audit_log(self, project_id: str) -> list[dict[str, Any]]:
+        with self.project_lock(project_id):
+            events = self._read_audit_unlocked(self.project_dir(project_id))
+            return list(reversed(events))
+
     def mutate(
         self,
         project_id: str,
         callback: Callable[[Workspace], Any],
         expected_revision: int | None = None,
+        actor: dict[str, Any] | None = None,
+        audit_builder: Callable[[Workspace, Any], dict[str, Any]] | None = None,
+        snapshot_sources: bool = False,
     ) -> tuple[Any, int]:
         with self.project_lock(project_id):
             project_dir = self.project_dir(project_id)
@@ -316,13 +541,45 @@ class ProjectStore:
             if expected_revision is not None and expected_revision != current_revision:
                 raise ProjectConflict(current_revision)
 
-            workspace = self._workspace_unlocked(project_dir)
-            result = callback(workspace)
+            tracked_names = [
+                "workspace.json",
+                "project.json",
+                "audit.json",
+            ]
+            if snapshot_sources:
+                tracked_names.extend(("source.xlsx", "source.xlsm"))
+            snapshots = {
+                name: (project_dir / name).read_bytes()
+                if (project_dir / name).exists()
+                else None
+                for name in tracked_names
+            }
 
-            meta["revision"] = current_revision + 1
-            meta["updated_at"] = utc_now()
-            self._write_meta_unlocked(project_dir, meta)
-            return result, meta["revision"]
+            try:
+                workspace = self._workspace_unlocked(project_dir)
+                result = callback(workspace)
+
+                if actor and audit_builder:
+                    self._append_audit_unlocked(
+                        project_dir, actor, audit_builder(workspace, result)
+                    )
+
+                meta["revision"] = current_revision + 1
+                meta["updated_at"] = utc_now()
+                self._write_meta_unlocked(project_dir, meta)
+                return result, meta["revision"]
+            except Exception:
+                for name, content in snapshots.items():
+                    path = project_dir / name
+                    if content is None:
+                        path.unlink(missing_ok=True)
+                        continue
+                    rollback_tmp = path.with_name(f".{path.name}.rollback.tmp")
+                    rollback_tmp.write_bytes(content)
+                    rollback_tmp.replace(path)
+                for tmp in project_dir.glob("*.tmp"):
+                    tmp.unlink(missing_ok=True)
+                raise
 
     def import_excel(
         self,
@@ -330,12 +587,32 @@ class ProjectStore:
         file_bytes: bytes,
         filename: str,
         expected_revision: int | None = None,
+        actor: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], int]:
         def action(workspace: Workspace) -> dict[str, Any]:
             workspace.import_file(file_bytes, filename)
             return workspace.state_json()
 
-        return self.mutate(project_id, action, expected_revision)
+        return self.mutate(
+            project_id,
+            action,
+            expected_revision,
+            actor=actor,
+            audit_builder=(
+                (
+                    lambda workspace, result: {
+                        "action": "excel_imported",
+                        "description": f"импортировал(а) Excel «{filename}»",
+                        "target_type": "project",
+                        "target_id": project_id,
+                        "anchor": "project-root",
+                    }
+                )
+                if actor
+                else None
+            ),
+            snapshot_sources=True,
+        )
 
     def export_excel(self, project_id: str):
         with self.project_lock(project_id):

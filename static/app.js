@@ -1,5 +1,9 @@
 let state = null;
 let projects = [];
+const userTokenStorageKey = "ipPlanManager.userToken";
+let userToken = localStorage.getItem(userTokenStorageKey) || "";
+let currentUser = null;
+let userDialogResolve = null;
 let currentProjectId = localStorage.getItem("ipPlanManager.projectId") || "";
 const projectTokensStorageKey = "ipPlanManager.projectTokens";
 let projectTokens = {};
@@ -36,7 +40,7 @@ function forgetProjectToken(projectId) {
 }
 
 function requestNeedsProjectAccess(url) {
-  return url !== "/api/projects" && !url.endsWith("/unlock");
+  return !url.startsWith("/api/users") && url !== "/api/projects" && !url.endsWith("/unlock");
 }
 
 function isMutation(options = {}) {
@@ -47,6 +51,10 @@ function isMutation(options = {}) {
 async function api(url, options = {}) {
   const fetchOptions = {...options};
   const headers = new Headers(options.headers || {});
+
+  if (userToken) {
+    headers.set("X-User-Token", userToken);
+  }
 
   if (currentProjectId && requestNeedsProjectAccess(url)) {
     headers.set("X-Project-ID", currentProjectId);
@@ -65,7 +73,16 @@ async function api(url, options = {}) {
   try { body = await res.json(); } catch (_) {}
 
   if (!res.ok || !body?.ok) {
-    if (res.status === 403 && currentProjectId) {
+    if (res.status === 401) {
+      userToken = "";
+      currentUser = null;
+      localStorage.removeItem(userTokenStorageKey);
+    }
+    if (
+      res.status === 403 &&
+      currentProjectId &&
+      /(?:Нет доступа к проекту|Требуется PIN проекта)/.test(body?.error || "")
+    ) {
       forgetProjectToken(currentProjectId);
     }
     if (res.status === 409) {
@@ -85,6 +102,10 @@ async function api(url, options = {}) {
     updateSyncStatus();
   }
 
+  if (isMutation(options) && document.body.classList.contains("audit-open")) {
+    setTimeout(loadAuditLog, 0);
+  }
+
   return body.data;
 }
 
@@ -95,6 +116,75 @@ function toast(message, error = false) {
   el.classList.add("show");
   clearTimeout(window.__toastTimer);
   window.__toastTimer = setTimeout(() => el.classList.remove("show"), 3200);
+}
+
+function updateUserControls() {
+  $("userProfileBtn").textContent = currentUser?.name || "Пользователь";
+}
+
+function openUserDialog() {
+  const editing = !!currentUser;
+  $("userDialogTitle").textContent = editing ? "Изменить имя" : "Как вас зовут?";
+  $("userDialogHint").textContent = editing
+    ? "Новое имя будет указано в следующих событиях журнала."
+    : "Имя будет отображаться в журнале изменений.";
+  $("userName").value = currentUser?.name || "";
+  $("closeUserDialogBtn").hidden = !editing;
+  if (!$("userDialog").open) $("userDialog").showModal();
+  $("userName").focus();
+}
+
+async function saveUserProfile(event) {
+  event.preventDefault();
+  const name = $("userName").value.trim();
+  if (!name) return;
+
+  try {
+    if (currentUser) {
+      currentUser = await api("/api/users/me", {
+        method: "PUT",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name})
+      });
+      toast("Имя изменено");
+    } else {
+      const result = await api("/api/users", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name})
+      });
+      currentUser = result.user;
+      userToken = result.access_token;
+      localStorage.setItem(userTokenStorageKey, userToken);
+      toast("Профиль создан");
+    }
+    updateUserControls();
+    $("userDialog").close();
+    if (userDialogResolve) {
+      userDialogResolve();
+      userDialogResolve = null;
+    }
+  } catch (error) {
+    toast(error.message, true);
+    if (error.status === 401) openUserDialog();
+  }
+}
+
+async function ensureUserProfile() {
+  if (userToken) {
+    try {
+      currentUser = await api("/api/users/me");
+      updateUserControls();
+      return;
+    } catch (error) {
+      if (error.status !== 401) throw error;
+    }
+  }
+
+  await new Promise(resolve => {
+    userDialogResolve = resolve;
+    openUserDialog();
+  });
 }
 
 function currentProject() {
@@ -182,9 +272,14 @@ async function loadProjects(preferredId = null) {
 function updateProjectControls() {
   const hasProject = !!currentProjectId;
   const hasAccess = hasProject && !!currentProjectToken();
+  const project = currentProject();
 
   $("renameProjectBtn").disabled = !hasAccess;
-  $("deleteProjectBtn").disabled = !hasAccess;
+  $("deleteProjectBtn").disabled = !hasAccess || !project?.can_delete;
+  $("deleteProjectBtn").title = hasAccess && !project?.can_delete
+    ? "Удалить проект может только его создатель"
+    : "";
+  $("auditBtn").disabled = !hasAccess;
   $("addSiteBtn").disabled = !hasAccess;
   $("importLabel").classList.toggle("disabled", !hasAccess);
 
@@ -262,17 +357,15 @@ async function saveProject(e) {
 function showUnlockDialog() {
   const project = currentProject();
   if (!project) return;
-  $("unlockDialogTitle").textContent = project.pin_set
-    ? `Открыть проект · ${project.name}`
-    : `PIN не настроен · ${project.name}`;
+  $("unlockDialogTitle").textContent = `Открыть проект · ${project.name}`;
   $("unlockDialogDescription").textContent = project.pin_set
     ? "PIN потребуется только один раз в этом браузере."
-    : "Администратор должен задать PIN на сервере.";
+    : "У проекта нет настроенного PIN. PIN по умолчанию: 1111";
   $("unlockPIN").value = "";
-  $("unlockPIN").disabled = !project.pin_set;
-  $("unlockSubmitBtn").disabled = !project.pin_set;
+  $("unlockPIN").disabled = false;
+  $("unlockSubmitBtn").disabled = false;
   if (!$("unlockDialog").open) $("unlockDialog").showModal();
-  if (project.pin_set) $("unlockPIN").focus();
+  $("unlockPIN").focus();
 }
 
 async function unlockProject(e) {
@@ -324,6 +417,9 @@ async function openProject(projectId) {
   }
   try {
     await refresh();
+    if (!currentProject()?.can_delete) {
+      await loadProjects(currentProjectId);
+    }
   } catch (err) {
     if (!currentProjectToken()) {
       state = null;
@@ -338,6 +434,10 @@ async function openProject(projectId) {
 async function deleteCurrentProject() {
   const project = currentProject();
   if (!project) return;
+  if (!project.can_delete) {
+    toast("Удалить проект может только его создатель", true);
+    return;
+  }
 
   if (!confirm(`Удалить проект «${project.name}» вместе со всем IP-планом?`)) return;
 
@@ -365,7 +465,8 @@ async function pollProjectRevision() {
       cache: "no-store",
       headers: {
         "X-Project-ID": currentProjectId,
-        "X-Project-Token": currentProjectToken()
+        "X-Project-Token": currentProjectToken(),
+        "X-User-Token": userToken
       }
     });
     const body = await res.json();
@@ -477,6 +578,93 @@ function descendantStats(node) {
     hosts += s.hosts;
   }
   return { subnets, hosts };
+}
+
+function closeAuditPanel() {
+  $("auditPanel").classList.remove("open");
+  $("auditPanel").setAttribute("aria-hidden", "true");
+  document.body.classList.remove("audit-open");
+}
+
+function focusAuditTarget(anchor) {
+  let target = document.getElementById(anchor);
+  if (target?.matches(".row-hidden, .match-hidden")) {
+    collapsed.clear();
+    $("searchInput").value = "";
+    render();
+    target = document.getElementById(anchor);
+  }
+  if (!target) {
+    toast("Эта строка уже удалена; показан текущий IP-план");
+    target = $("project-root");
+  }
+  target.scrollIntoView({behavior: "smooth", block: "center"});
+  target.classList.remove("audit-target-flash");
+  requestAnimationFrame(() => target.classList.add("audit-target-flash"));
+  setTimeout(() => target.classList.remove("audit-target-flash"), 1900);
+}
+
+function renderAuditLog(events) {
+  const list = $("auditList");
+  list.innerHTML = "";
+  if (!events.length) {
+    const empty = document.createElement("div");
+    empty.className = "audit-empty";
+    empty.textContent = "Изменений пока нет";
+    list.appendChild(empty);
+    return;
+  }
+
+  for (const event of events) {
+    const anchor = /^[A-Za-z0-9_-]+$/.test(event.anchor || "")
+      ? event.anchor
+      : "project-root";
+    const link = document.createElement("a");
+    link.className = "audit-event";
+    link.href = `#${anchor}`;
+
+    const actor = document.createElement("strong");
+    actor.textContent = event.user_name || "Неизвестный пользователь";
+    const description = document.createElement("div");
+    description.className = "audit-event-description";
+    description.textContent = event.description || "Изменил(а) IP-план";
+    const time = document.createElement("div");
+    time.className = "audit-event-time";
+    time.textContent = new Date(event.timestamp).toLocaleString("ru-RU");
+
+    link.append(actor, description, time);
+    link.addEventListener("click", clickEvent => {
+      clickEvent.preventDefault();
+      history.replaceState(null, "", `#${anchor}`);
+      focusAuditTarget(anchor);
+    });
+    list.appendChild(link);
+  }
+}
+
+async function loadAuditLog() {
+  if (!currentProjectId || !currentProjectToken()) {
+    renderAuditLog([]);
+    return;
+  }
+  try {
+    renderAuditLog(await api("/api/audit"));
+  } catch (error) {
+    const list = $("auditList");
+    list.innerHTML = "";
+    const message = document.createElement("div");
+    message.className = "audit-empty";
+    message.textContent = error.message;
+    list.appendChild(message);
+  }
+}
+
+async function openAuditPanel() {
+  $("auditPanel").classList.add("open");
+  $("auditPanel").setAttribute("aria-hidden", "false");
+  document.body.classList.add("audit-open");
+  $("auditList").innerHTML = '<div class="audit-empty">Загрузка…</div>';
+  await loadAuditLog();
 }
 
 function render() {
@@ -792,6 +980,7 @@ function appendNodes(tbody, site, nodes, depth, ancestorIds) {
     const hiddenByAncestor = ancestorIds.some(id => collapsed.has(id));
     const row = document.createElement("tr");
     row.className = `subnet-row ${hiddenByAncestor ? "row-hidden" : ""}`;
+    row.id = `row-${node.id}`;
     row.dataset.subnetId = node.id;
     row.dataset.search = [
       node.cidr, node.gateway, node.vrf, node.vlan_number, node.vlan_name,
@@ -834,6 +1023,7 @@ function appendNodes(tbody, site, nodes, depth, ancestorIds) {
     for (const host of node.hosts || []) {
       const hr = document.createElement("tr");
       hr.className = `host-row ${childHidden ? "row-hidden" : ""}`;
+      hr.id = `row-${host.id}`;
       hr.dataset.hostId = host.id;
 
       const prefix = fixedIpPrefix(node.cidr);
@@ -1375,7 +1565,8 @@ async function exportExcel() {
     const response = await fetch("/api/export", {
       headers: {
         "X-Project-ID": currentProjectId,
-        "X-Project-Token": currentProjectToken()
+        "X-Project-Token": currentProjectToken(),
+        "X-User-Token": userToken
       }
     });
     if (!response.ok) {
@@ -1417,6 +1608,7 @@ async function refresh() {
   pendingRemoteRevision = null;
   updateSyncStatus();
   render();
+  if (document.body.classList.contains("audit-open")) await loadAuditLog();
 }
 
 function applySearch() {
@@ -1436,6 +1628,14 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.querySelectorAll("[data-close]").forEach(btn => {
     btn.onclick = () => $(btn.dataset.close).close();
   });
+
+  $("userForm").onsubmit = saveUserProfile;
+  $("userProfileBtn").onclick = openUserDialog;
+  $("userDialog").addEventListener("cancel", event => {
+    if (!currentUser) event.preventDefault();
+  });
+  $("auditBtn").onclick = openAuditPanel;
+  $("closeAuditBtn").onclick = closeAuditPanel;
 
   $("newProjectBtn").onclick = () => openProjectDialog("create");
   $("renameProjectBtn").onclick = () => openProjectDialog("rename");
@@ -1490,6 +1690,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   try {
+    await ensureUserProfile();
     const remembered = currentProjectId;
     await loadProjects(remembered);
 

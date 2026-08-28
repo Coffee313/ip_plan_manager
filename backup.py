@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -47,10 +48,19 @@ def create_backup(store: ProjectStore | None = None) -> Path:
                         }
                     )
 
+            with store.users_lock:
+                users = store._read_users_unlocked()
+                users_bytes = json.dumps(
+                    {"users": users}, ensure_ascii=False, indent=2
+                ).encode("utf-8")
+                archive.writestr("users.json", users_bytes)
+
             manifest = {
-                "format_version": 2,
+                "format_version": 3,
                 "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                 "complete": True,
+                "users_included": True,
+                "users_sha256": hashlib.sha256(users_bytes).hexdigest(),
                 "project_count": len(included),
                 "project_ids": [project["id"] for project in included],
                 "projects": included,

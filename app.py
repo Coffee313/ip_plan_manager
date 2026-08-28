@@ -11,6 +11,7 @@ from project_store import (
     ProjectConflict,
     ProjectNotFound,
     ProjectStore,
+    UserAccessDenied,
 )
 
 
@@ -40,6 +41,15 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     def authorize(pid: str) -> None:
         store.verify_access(pid, request.headers.get("X-Project-Token", ""))
+        actor = current_user(required=False)
+        if actor:
+            store.claim_legacy_project_owner(pid, actor)
+
+    def current_user(required: bool = True):
+        token = request.headers.get("X-User-Token", "")
+        if not token and not required:
+            return None
+        return store.verify_user(token)
 
     def expected_revision() -> int | None:
         raw = request.headers.get("X-Project-Revision")
@@ -50,12 +60,24 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
         except ValueError as exc:
             raise ValueError("Некорректная ревизия проекта") from exc
 
-    def project_mutation(callback):
-        pid = project_id()
-        authorize(pid)
+    def project_mutation(callback, audit_builder=None):
         try:
-            result, revision = store.mutate(pid, callback, expected_revision())
+            pid = project_id()
+            user = current_user()
+            assert user is not None
+            authorize(pid)
+            result, revision = store.mutate(
+                pid,
+                callback,
+                expected_revision(),
+                actor=user,
+                audit_builder=audit_builder,
+            )
             return ok(result, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
         except ProjectConflict as exc:
             return fail(exc, 409, exc.current_revision)
 
@@ -63,30 +85,88 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     def access_denied(exc):
         return fail(exc, 403)
 
+    @app.errorhandler(UserAccessDenied)
+    def user_access_denied(exc):
+        return fail(exc, 401)
+
     @app.get("/")
     def index():
         return render_template("index.html")
 
+    @app.post("/api/users")
+    def create_user():
+        try:
+            payload = request.get_json(force=True)
+            user, access_token = store.create_user(payload.get("name", ""))
+            return ok({"user": user, "access_token": access_token})
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/users/me")
+    def get_current_user():
+        try:
+            return ok(current_user())
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+
+    @app.put("/api/users/me")
+    def update_current_user():
+        try:
+            payload = request.get_json(force=True)
+            user = store.update_user(
+                request.headers.get("X-User-Token", ""), payload.get("name", "")
+            )
+            return ok(user)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/projects")
     def list_projects():
-        return ok(store.list_projects())
+        try:
+            user = current_user(required=False)
+            projects = store.list_projects()
+            for project in projects:
+                project["can_delete"] = bool(
+                    user and store.is_creator(project["id"], user["id"])
+                )
+            return ok(projects)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
 
     @app.post("/api/projects")
     def create_project():
         try:
+            user = current_user()
+            assert user is not None
             payload = request.get_json(force=True)
             project, access_token = store.create_project(
-                payload.get("name", ""), payload.get("pin", "")
+                payload.get("name", ""),
+                payload.get("pin", ""),
+                user["id"],
+                user["name"],
             )
+            project["can_delete"] = True
             return ok({"project": project, "access_token": access_token})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except Exception as exc:
             return fail(exc)
 
     @app.post("/api/projects/<pid>/unlock")
     def unlock_project(pid: str):
         try:
+            user = current_user()
+            assert user is not None
             payload = request.get_json(force=True)
-            return ok(store.unlock_project(pid, payload.get("pin", "")))
+            result = store.unlock_project(
+                pid, payload.get("pin", ""), user["id"], user["name"]
+            )
+            result["project"]["can_delete"] = store.is_creator(pid, user["id"])
+            return ok(result)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except ProjectNotFound as exc:
@@ -97,10 +177,14 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     @app.put("/api/projects/<pid>")
     def rename_project(pid: str):
         try:
+            user = current_user()
+            assert user is not None
             authorize(pid)
             payload = request.get_json(force=True)
-            meta = store.rename_project(pid, payload.get("name", ""))
+            meta = store.rename_project(pid, payload.get("name", ""), actor=user)
             return ok(meta, int(meta.get("revision", 0)))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -109,9 +193,13 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     @app.delete("/api/projects/<pid>")
     def delete_project(pid: str):
         try:
+            user = current_user()
+            assert user is not None
             authorize(pid)
-            store.delete_project(pid)
+            store.delete_project(pid, user["id"])
             return ok()
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -122,6 +210,8 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
         try:
             authorize(pid)
             return ok({"revision": store.get_revision(pid)})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -134,6 +224,22 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             authorize(pid)
             state, revision = store.state(pid)
             return ok(state, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc, 404)
+
+    @app.get("/api/audit")
+    def get_audit_log():
+        try:
+            pid = project_id()
+            current_user()
+            authorize(pid)
+            return ok(store.audit_log(pid))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -143,6 +249,8 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     def import_excel():
         try:
             pid = project_id()
+            user = current_user()
+            assert user is not None
             authorize(pid)
             if "file" not in request.files:
                 raise ValueError("Файл не выбран")
@@ -155,9 +263,12 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                 uploaded.read(),
                 uploaded.filename,
                 expected_revision(),
+                actor=user,
             )
             full_state, _ = store.state(pid)
             return ok(full_state, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except ProjectConflict as exc:
@@ -182,6 +293,8 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                 as_attachment=True,
                 download_name=filename,
             )
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -191,7 +304,16 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     def create_site():
         try:
             return project_mutation(
-                lambda workspace: workspace.create_site(request.get_json(force=True))
+                lambda workspace: workspace.create_site(request.get_json(force=True)),
+                lambda workspace, result: {
+                    "action": "site_created",
+                    "description": (
+                        f"создал(а) площадку «{workspace.find_site(result['id'])['name']}»"
+                    ),
+                    "target_type": "site",
+                    "target_id": result["id"],
+                    "anchor": f"site-{result['id']}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -204,7 +326,14 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             return project_mutation(
                 lambda workspace: workspace.update_site(
                     site_id, request.get_json(force=True)
-                )
+                ),
+                lambda workspace, result: {
+                    "action": "site_updated",
+                    "description": f"изменил(а) площадку «{result['name']}»",
+                    "target_type": "site",
+                    "target_id": site_id,
+                    "anchor": f"site-{site_id}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -213,8 +342,24 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.delete("/api/sites/<site_id>")
     def delete_site(site_id: str):
+        deleted: dict[str, str] = {}
+
+        def action(workspace):
+            site = workspace.find_site(site_id)
+            deleted["name"] = site["name"]
+            return workspace.delete_site(site_id)
+
         try:
-            return project_mutation(lambda workspace: workspace.delete_site(site_id))
+            return project_mutation(
+                action,
+                lambda workspace, result: {
+                    "action": "site_deleted",
+                    "description": f"удалил(а) площадку «{deleted['name']}»",
+                    "target_type": "site",
+                    "target_id": site_id,
+                    "anchor": f"site-{site_id}",
+                },
+            )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -224,7 +369,16 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     def create_subnet():
         try:
             return project_mutation(
-                lambda workspace: workspace.create_subnet(request.get_json(force=True))
+                lambda workspace: workspace.create_subnet(request.get_json(force=True)),
+                lambda workspace, result: {
+                    "action": "subnet_created",
+                    "description": (
+                        f"создал(а) подсеть {workspace.find_subnet(result['id'])[1]['cidr']}"
+                    ),
+                    "target_type": "subnet",
+                    "target_id": result["id"],
+                    "anchor": f"row-{result['id']}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -237,7 +391,14 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             return project_mutation(
                 lambda workspace: workspace.update_subnet(
                     subnet_id, request.get_json(force=True)
-                )
+                ),
+                lambda workspace, result: {
+                    "action": "subnet_updated",
+                    "description": f"изменил(а) подсеть {result['cidr']}",
+                    "target_type": "subnet",
+                    "target_id": subnet_id,
+                    "anchor": f"row-{subnet_id}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -246,8 +407,24 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.delete("/api/subnets/<subnet_id>")
     def delete_subnet(subnet_id: str):
+        deleted: dict[str, str] = {}
+
+        def action(workspace):
+            site, subnet = workspace.find_subnet(subnet_id)
+            deleted["cidr"] = subnet["cidr"]
+            return workspace.delete_subnet(subnet_id)
+
         try:
-            return project_mutation(lambda workspace: workspace.delete_subnet(subnet_id))
+            return project_mutation(
+                action,
+                lambda workspace, result: {
+                    "action": "subnet_deleted",
+                    "description": f"удалил(а) подсеть {deleted['cidr']}",
+                    "target_type": "subnet",
+                    "target_id": subnet_id,
+                    "anchor": f"row-{subnet_id}",
+                },
+            )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
@@ -261,7 +438,16 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "id": workspace.create_host(
                         subnet_id, request.get_json(force=True)
                     )
-                }
+                },
+                lambda workspace, result: {
+                    "action": "host_created",
+                    "description": (
+                        f"создал(а) хост {workspace.find_host(result['id'])[2]['values'][0]}"
+                    ),
+                    "target_type": "host",
+                    "target_id": result["id"],
+                    "anchor": f"row-{result['id']}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -274,7 +460,16 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             return project_mutation(
                 lambda workspace: workspace.update_host(
                     host_id, request.get_json(force=True)
-                )
+                ),
+                lambda workspace, result: {
+                    "action": "host_updated",
+                    "description": (
+                        f"изменил(а) хост {workspace.find_host(host_id)[2]['values'][0]}"
+                    ),
+                    "target_type": "host",
+                    "target_id": host_id,
+                    "anchor": f"row-{host_id}",
+                },
             )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
@@ -283,8 +478,24 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.delete("/api/hosts/<host_id>")
     def delete_host(host_id: str):
+        deleted: dict[str, str] = {}
+
+        def action(workspace):
+            site, subnet, host = workspace.find_host(host_id)
+            deleted["ip"] = str(host["values"][0])
+            return workspace.delete_host(host_id)
+
         try:
-            return project_mutation(lambda workspace: workspace.delete_host(host_id))
+            return project_mutation(
+                action,
+                lambda workspace, result: {
+                    "action": "host_deleted",
+                    "description": f"удалил(а) хост {deleted['ip']}",
+                    "target_type": "host",
+                    "target_id": host_id,
+                    "anchor": f"row-{host_id}",
+                },
+            )
         except ProjectAccessDenied as exc:
             return fail(exc, 403)
         except Exception as exc:
