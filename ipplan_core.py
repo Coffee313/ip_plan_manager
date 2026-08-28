@@ -634,29 +634,6 @@ class Workspace:
                 # Clearing Gateway leaves CIDR unchanged.
                 new_net = old_net
 
-        # Editing an existing subnet must not silently turn it into a new
-        # supernet for neighboring subnets. Hierarchy is calculated dynamically
-        # from CIDR containment, so a simple /24 -> /23 change could otherwise
-        # "capture" an existing sibling /24.
-        #
-        # Creating an intentional supernet is still supported through the normal
-        # "+ Подсеть" action. Narrowing an already-broadened subnet is allowed,
-        # which also lets old projects recover from the previous behavior.
-        for other in site["subnets"]:
-            if other["id"] == subnet_id:
-                continue
-
-            other_net = parse_network(other["cidr"])
-            was_inside_old = other_net != old_net and other_net.subnet_of(old_net)
-            would_be_inside_new = other_net != new_net and other_net.subnet_of(new_net)
-
-            if would_be_inside_new and not was_inside_old:
-                raise ValueError(
-                    f"Изменение {old_net} на {new_net} захватит существующую "
-                    f"подсеть {other_net}. Для создания суперсети добавьте ее "
-                    f"как отдельную подсеть."
-                )
-
         self.validate_subnet_network(site, new_net, exclude_id=subnet_id)
 
         # Hosts explicitly attached to this subnet inherit the new subnet

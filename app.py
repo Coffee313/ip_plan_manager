@@ -422,6 +422,10 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
         def action(workspace):
             site, subnet = workspace.find_subnet(subnet_id)
             deleted["cidr"] = subnet["cidr"]
+            parent_id = workspace.subnet_parent_id(site, subnet)
+            deleted["anchor"] = (
+                f"site-{site['id']}" if parent_id == site["id"] else f"row-{parent_id}"
+            )
             return workspace.delete_subnet(subnet_id)
 
         try:
@@ -432,7 +436,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "description": f"удалил(а) подсеть {deleted['cidr']}",
                     "target_type": "subnet",
                     "target_id": subnet_id,
-                    "anchor": f"row-{subnet_id}",
+                    "anchor": deleted["anchor"],
                 },
             )
         except ProjectAccessDenied as exc:
@@ -493,6 +497,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
         def action(workspace):
             site, subnet, host = workspace.find_host(host_id)
             deleted["ip"] = str(host["values"][0])
+            deleted["anchor"] = f"row-{subnet['id']}"
             return workspace.delete_host(host_id)
 
         try:
@@ -503,7 +508,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "description": f"удалил(а) хост {deleted['ip']}",
                     "target_type": "host",
                     "target_id": host_id,
-                    "anchor": f"row-{host_id}",
+                    "anchor": deleted["anchor"],
                 },
             )
         except ProjectAccessDenied as exc:

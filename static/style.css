@@ -766,6 +766,11 @@ body.audit-open .topbar {
   0%, 55% { outline: 3px solid #f5b942; outline-offset: 2px; }
   100% { outline: 3px solid transparent; outline-offset: 2px; }
 }
+.audit-deletion-target-flash { animation: audit-deletion-target-flash 1.8s ease; }
+@keyframes audit-deletion-target-flash {
+  0%, 55% { outline: 3px solid #d94a3a; outline-offset: 2px; background: #fff1ef; }
+  100% { outline: 3px solid transparent; outline-offset: 2px; background: transparent; }
+}
 
 @media (max-width: 900px) {
   .audit-panel { width: 100vw; }

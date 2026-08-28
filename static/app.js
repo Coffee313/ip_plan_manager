@@ -281,6 +281,7 @@ function updateProjectControls() {
     : "";
   $("auditBtn").disabled = !currentUser;
   $("addSiteBtn").disabled = !hasAccess;
+  $("collapseAllBtn").disabled = !hasAccess;
   $("importLabel").classList.toggle("disabled", !hasAccess);
 
   if (!hasAccess) {
@@ -382,6 +383,7 @@ async function unlockProject(e) {
     $("unlockDialog").close();
     await loadProjects(currentProjectId);
     await refresh();
+    collapseAllSubnets();
     toast("Проект открыт. Доступ сохранен в этом браузере.");
   } catch (err) {
     toast(err.message, true);
@@ -417,6 +419,7 @@ async function openProject(projectId) {
   }
   try {
     await refresh();
+    collapseAllSubnets();
     if (!currentProject()?.can_delete) {
       await loadProjects(currentProjectId);
     }
@@ -580,13 +583,25 @@ function descendantStats(node) {
   return { subnets, hosts };
 }
 
+function collapseAllSubnets() {
+  collapsed.clear();
+  const collect = nodes => {
+    for (const node of nodes || []) {
+      collapsed.add(node.id);
+      collect(node.children);
+    }
+  };
+  for (const site of state?.sites || []) collect(site.tree);
+  render();
+}
+
 function closeAuditPanel() {
   $("auditPanel").classList.remove("open");
   $("auditPanel").setAttribute("aria-hidden", "true");
   document.body.classList.remove("audit-open");
 }
 
-function focusAuditTarget(anchor) {
+function focusAuditTarget(anchor, action = "") {
   let target = document.getElementById(anchor);
   if (target?.matches(".row-hidden, .match-hidden")) {
     collapsed.clear();
@@ -599,9 +614,12 @@ function focusAuditTarget(anchor) {
     target = $("project-root");
   }
   target.scrollIntoView({behavior: "smooth", block: "center"});
-  target.classList.remove("audit-target-flash");
-  requestAnimationFrame(() => target.classList.add("audit-target-flash"));
-  setTimeout(() => target.classList.remove("audit-target-flash"), 1900);
+  const highlightClass = action.endsWith("_deleted")
+    ? "audit-deletion-target-flash"
+    : "audit-target-flash";
+  target.classList.remove("audit-target-flash", "audit-deletion-target-flash");
+  requestAnimationFrame(() => target.classList.add(highlightClass));
+  setTimeout(() => target.classList.remove(highlightClass), 1900);
 }
 
 function renderAuditLog(events) {
@@ -636,7 +654,7 @@ function renderAuditLog(events) {
     link.addEventListener("click", clickEvent => {
       clickEvent.preventDefault();
       history.replaceState(null, "", `#${anchor}`);
-      focusAuditTarget(anchor);
+      focusAuditTarget(anchor, event.action);
     });
     list.appendChild(link);
   }
@@ -1557,8 +1575,7 @@ async function importExcel(file) {
   try {
     const data = await api("/api/import", {method:"POST", body:fd});
     state = data;
-    collapsed.clear();
-    render();
+    collapseAllSubnets();
     toast("Excel импортирован");
   } catch (e) { toast(e.message, true); }
 }
@@ -1640,6 +1657,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
   $("auditBtn").onclick = openAuditPanel;
   $("closeAuditBtn").onclick = closeAuditPanel;
+  $("collapseAllBtn").onclick = collapseAllSubnets;
 
   $("newProjectBtn").onclick = () => openProjectDialog("create");
   $("renameProjectBtn").onclick = () => openProjectDialog("rename");

@@ -205,8 +205,8 @@ def test_subnet_and_host_changes_are_audited_with_row_links(tmp_path):
     assert by_action["subnet_updated"]["anchor"] == f"row-{subnet_id}"
     assert by_action["host_created"]["anchor"] == f"row-{host_id}"
     assert by_action["host_updated"]["anchor"] == f"row-{host_id}"
-    assert by_action["host_deleted"]["anchor"] == f"row-{host_id}"
-    assert by_action["subnet_deleted"]["anchor"] == f"row-{subnet_id}"
+    assert by_action["host_deleted"]["anchor"] == f"row-{subnet_id}"
+    assert by_action["subnet_deleted"]["anchor"] == f"site-{site_id}"
 
 
 def test_audit_write_failure_rolls_back_workspace_and_revision(tmp_path, monkeypatch):

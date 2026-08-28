@@ -56,3 +56,20 @@ def test_corrupt_workspace_is_reported_instead_of_becoming_empty(tmp_path):
 
     with pytest.raises(ValueError, match="поврежден"):
         workspace.load_saved()
+
+
+def test_expanding_subnet_makes_it_supernet_without_changing_neighbor(tmp_path):
+    workspace = Workspace(tmp_path)
+    site = workspace.create_site({"name": "Площадка", "cidr": "10.0.0.0/16"})
+    container = workspace.create_subnet({"parent_id": site["id"], "cidr": "10.0.0.0/20"})
+    first = workspace.create_subnet({"parent_id": container["id"], "cidr": "10.0.0.0/24"})
+    second = workspace.create_subnet({"parent_id": container["id"], "cidr": "10.0.1.0/24"})
+
+    workspace.update_subnet(first["id"], {"cidr": "10.0.0.0/23", "_changed_field": "cidr"})
+
+    _, first_subnet = workspace.find_subnet(first["id"])
+    _, second_subnet = workspace.find_subnet(second["id"])
+    assert first_subnet["cidr"] == "10.0.0.0/23"
+    assert second_subnet["cidr"] == "10.0.1.0/24"
+    assert workspace.subnet_parent_id(workspace.sites[0], first_subnet) == container["id"]
+    assert workspace.subnet_parent_id(workspace.sites[0], second_subnet) == first["id"]
