@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import os
 import zipfile
 
 import pytest
 
-from backup import create_backup
+from backup import cleanup_old_backups, create_backup
 from project_store import ProjectStore
 from restore_backup import restore_backup
 
@@ -103,6 +104,22 @@ def test_backup_can_be_copied_to_external_directory(tmp_path, monkeypatch):
 
     external_path = external / local_path.name
     assert external_path.read_bytes() == local_path.read_bytes()
+
+
+def test_cleanup_applies_retention_to_external_backup_directory(tmp_path, monkeypatch):
+    store = ProjectStore(tmp_path / "data")
+    external = tmp_path / "external"
+    external.mkdir()
+    old_backup = external / "ipplan-backup-old.zip"
+    old_backup.write_bytes(b"old")
+    os.utime(old_backup, (0, 0))
+    monkeypatch.setenv("IP_PLAN_BACKUP_COPY_DIR", str(external))
+    monkeypatch.setenv("IP_PLAN_BACKUP_KEEP_DAYS", "30")
+
+    removed = cleanup_old_backups(store)
+
+    assert removed == 1
+    assert not old_backup.exists()
 
 
 def test_restore_accepts_legacy_v15_manifest(tmp_path):

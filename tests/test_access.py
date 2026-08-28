@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from app import create_app
 from project_store import ProjectStore
 
@@ -74,3 +76,42 @@ def test_pin_must_contain_exactly_four_digits(tmp_path):
         response = client.post("/api/projects", json={"name": f"P-{pin}", "pin": pin})
         assert response.status_code == 400
         assert "четыр" in response.get_json()["error"].lower()
+
+
+def test_legacy_project_cannot_be_claimed_through_public_unlock(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    project, _ = store.create_project("Legacy", "1234")
+    meta_path = store.project_dir(project["id"]) / "project.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.pop("pin_hash")
+    meta.pop("access_token_hashes")
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+    client = create_app(store).test_client()
+
+    response = client.post(
+        f"/api/projects/{project['id']}/unlock", json={"pin": "5555"}
+    )
+
+    assert response.status_code == 403
+    assert "администратор" in response.get_json()["error"].lower()
+    assert store.list_projects()[0]["pin_set"] is False
+
+
+def test_administrator_can_set_pin_for_legacy_project_on_server(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    project, _ = store.create_project("Legacy", "1234")
+    meta_path = store.project_dir(project["id"]) / "project.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.pop("pin_hash")
+    meta.pop("access_token_hashes")
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    store.set_project_pin(project["id"], "7777")
+
+    client = create_app(store).test_client()
+    assert client.post(
+        f"/api/projects/{project['id']}/unlock", json={"pin": "0000"}
+    ).status_code == 403
+    assert client.post(
+        f"/api/projects/{project['id']}/unlock", json={"pin": "7777"}
+    ).status_code == 200

@@ -264,10 +264,15 @@ function showUnlockDialog() {
   if (!project) return;
   $("unlockDialogTitle").textContent = project.pin_set
     ? `Открыть проект · ${project.name}`
-    : `Задать PIN · ${project.name}`;
+    : `PIN не настроен · ${project.name}`;
+  $("unlockDialogDescription").textContent = project.pin_set
+    ? "PIN потребуется только один раз в этом браузере."
+    : "Администратор должен задать PIN на сервере.";
   $("unlockPIN").value = "";
+  $("unlockPIN").disabled = !project.pin_set;
+  $("unlockSubmitBtn").disabled = !project.pin_set;
   if (!$("unlockDialog").open) $("unlockDialog").showModal();
-  $("unlockPIN").focus();
+  if (project.pin_set) $("unlockPIN").focus();
 }
 
 async function unlockProject(e) {

@@ -82,14 +82,22 @@ def cleanup_old_backups(store: ProjectStore) -> int:
 
     threshold = datetime.now(timezone.utc) - timedelta(days=keep_days)
     removed = 0
-    for path in store.backups_root.glob("ipplan-backup-*.zip"):
-        try:
-            modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
-            if modified < threshold:
-                path.unlink()
-                removed += 1
-        except FileNotFoundError:
-            pass
+    roots = [store.backups_root]
+    copy_dir = os.environ.get("IP_PLAN_BACKUP_COPY_DIR", "").strip()
+    if copy_dir:
+        external_root = Path(copy_dir).expanduser()
+        if external_root.resolve() != store.backups_root.resolve():
+            roots.append(external_root)
+
+    for root in roots:
+        for path in root.glob("ipplan-backup-*.zip"):
+            try:
+                modified = datetime.fromtimestamp(path.stat().st_mtime, timezone.utc)
+                if modified < threshold:
+                    path.unlink()
+                    removed += 1
+            except FileNotFoundError:
+                continue
     return removed
 
 

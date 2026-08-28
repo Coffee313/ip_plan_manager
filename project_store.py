@@ -218,11 +218,11 @@ class ProjectStore:
             project_dir = self.project_dir(project_id)
             meta = self._read_meta_unlocked(project_dir)
 
-            # Projects from versions without PIN support are claimed on their
-            # first unlock inside the trusted company network.
             if not meta.get("pin_hash"):
-                meta["pin_hash"] = hash_pin(pin)
-            elif not verify_pin(pin, meta["pin_hash"]):
+                raise ProjectAccessDenied(
+                    "PIN проекта не настроен. Администратор должен задать его на сервере"
+                )
+            if not verify_pin(pin, meta["pin_hash"]):
                 raise ProjectAccessDenied("Неверный PIN")
 
             access_token = secrets.token_urlsafe(32)
@@ -234,6 +234,16 @@ class ProjectStore:
                 "project": self._public_meta(meta),
                 "access_token": access_token,
             }
+
+    def set_project_pin(self, project_id: str, pin: str) -> None:
+        pin = validate_pin(pin)
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+            meta["pin_hash"] = hash_pin(pin)
+            meta["access_token_hashes"] = []
+            meta["updated_at"] = utc_now()
+            self._write_meta_unlocked(project_dir, meta)
 
     def rename_project(self, project_id: str, name: str) -> dict[str, Any]:
         name = str(name or "").strip()
