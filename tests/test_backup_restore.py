@@ -7,7 +7,7 @@ import zipfile
 import pytest
 
 from backup import cleanup_old_backups, create_backup
-from project_store import ProjectStore
+from project_store import ProjectStore, UserAccessDenied
 from restore_backup import restore_backup
 
 
@@ -178,5 +178,8 @@ def test_restore_accepts_legacy_v15_manifest(tmp_path):
                 archive.write(path, f"projects/{project['id']}/{path.name}")
 
     target = ProjectStore(tmp_path / "target")
+    _, current_user_token = target.create_user("Текущий пользователь")
     assert restore_backup(legacy, target) == 1
     assert project_names(target) == ["Legacy"]
+    with pytest.raises(UserAccessDenied, match="Профиль пользователя не найден"):
+        target.verify_user(current_user_token)

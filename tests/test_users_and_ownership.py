@@ -79,3 +79,13 @@ def test_only_creator_can_delete_project(tmp_path):
     }
     deleted = client.delete(f"/api/projects/{project_id}", headers=owner_headers)
     assert deleted.status_code == 200
+
+    system_audit = client.get(
+        "/api/system-audit",
+        headers={"X-User-Token": colleague["access_token"]},
+    )
+    assert system_audit.status_code == 200
+    event = system_audit.get_json()["data"][0]
+    assert event["action"] == "project_deleted"
+    assert event["project_id"] == project_id
+    assert event["user_name"] == "Владелец"

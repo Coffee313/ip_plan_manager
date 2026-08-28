@@ -196,7 +196,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             user = current_user()
             assert user is not None
             authorize(pid)
-            store.delete_project(pid, user["id"])
+            store.delete_project(pid, user)
             return ok()
         except UserAccessDenied as exc:
             return fail(exc, 401)
@@ -244,6 +244,16 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             return fail(exc, 403)
         except Exception as exc:
             return fail(exc, 404)
+
+    @app.get("/api/system-audit")
+    def get_system_audit_log():
+        try:
+            current_user()
+            return ok(store.system_audit_log())
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except Exception as exc:
+            return fail(exc, 500)
 
     @app.post("/api/import")
     def import_excel():

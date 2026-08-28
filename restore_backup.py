@@ -157,13 +157,13 @@ def restore_backup(backup: Path, store: ProjectStore | None = None) -> int:
                         moved_old = True
                     staged_root.rename(store.projects_root)
                     installed_projects = True
+                    if store.users_path.exists():
+                        store.users_path.rename(rollback_users)
+                        moved_users = True
                     if manifest.get("users_included") is True:
-                        if store.users_path.exists():
-                            store.users_path.rename(rollback_users)
-                            moved_users = True
                         staged_users.rename(store.users_path)
                 except Exception:
-                    if store.users_path.exists() and manifest.get("users_included") is True:
+                    if store.users_path.exists():
                         store.users_path.unlink()
                     if moved_users and rollback_users.exists():
                         rollback_users.rename(store.users_path)

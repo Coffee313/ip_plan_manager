@@ -279,7 +279,7 @@ function updateProjectControls() {
   $("deleteProjectBtn").title = hasAccess && !project?.can_delete
     ? "Удалить проект может только его создатель"
     : "";
-  $("auditBtn").disabled = !hasAccess;
+  $("auditBtn").disabled = !currentUser;
   $("addSiteBtn").disabled = !hasAccess;
   $("importLabel").classList.toggle("disabled", !hasAccess);
 
@@ -644,7 +644,11 @@ function renderAuditLog(events) {
 
 async function loadAuditLog() {
   if (!currentProjectId || !currentProjectToken()) {
-    renderAuditLog([]);
+    try {
+      renderAuditLog(await api("/api/system-audit"));
+    } catch (error) {
+      renderAuditLog([]);
+    }
     return;
   }
   try {

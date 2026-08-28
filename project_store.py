@@ -112,10 +112,14 @@ class ProjectStore:
         self.projects_root = self.data_root / "projects"
         self.backups_root = self.data_root / "backups"
         self.users_path = self.data_root / "users.json"
+        self.system_audit_path = self.data_root / "system_audit.json"
         self.projects_root.mkdir(parents=True, exist_ok=True)
         self.backups_root.mkdir(parents=True, exist_ok=True)
         self.registry_lock = FileLock(str(self.data_root / ".projects.lock"), timeout=15)
         self.users_lock = FileLock(str(self.data_root / ".users.lock"), timeout=15)
+        self.system_audit_lock = FileLock(
+            str(self.data_root / ".system-audit.lock"), timeout=15
+        )
 
     def _read_users_unlocked(self) -> list[dict[str, Any]]:
         if not self.users_path.exists():
@@ -182,6 +186,30 @@ class ProjectStore:
                     self._write_users_unlocked(users)
                     return self._public_user(user)
         raise UserAccessDenied("Профиль пользователя не найден")
+
+    def _read_system_audit_unlocked(self) -> list[dict[str, Any]]:
+        if not self.system_audit_path.exists():
+            return []
+        payload = json.loads(self.system_audit_path.read_text(encoding="utf-8"))
+        events = payload.get("events")
+        if not isinstance(events, list):
+            raise ValueError("Системный журнал поврежден")
+        return events
+
+    def _append_system_audit(self, event: dict[str, Any]) -> None:
+        with self.system_audit_lock:
+            events = self._read_system_audit_unlocked()
+            events.append(event)
+            tmp = self.system_audit_path.with_suffix(".json.tmp")
+            tmp.write_text(
+                json.dumps({"events": events}, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            tmp.replace(self.system_audit_path)
+
+    def system_audit_log(self) -> list[dict[str, Any]]:
+        with self.system_audit_lock:
+            return list(reversed(self._read_system_audit_unlocked()))
 
     def project_dir(self, project_id: str) -> Path:
         if not project_id or any(ch not in "0123456789abcdef" for ch in project_id.lower()):
@@ -475,13 +503,13 @@ class ProjectStore:
             )
             return True
 
-    def delete_project(self, project_id: str, user_id: str) -> None:
+    def delete_project(self, project_id: str, actor: dict[str, Any]) -> None:
         with self.registry_lock:
             project_dir = self.project_dir(project_id)
             lock = FileLock(str(project_dir / ".lock"), timeout=15)
             with lock:
                 meta = self._read_meta_unlocked(project_dir)
-                if meta.get("creator_user_id") != user_id:
+                if meta.get("creator_user_id") != actor["id"]:
                     raise ProjectAccessDenied(
                         "Удалить проект может только пользователь, который его создал"
                     )
@@ -489,6 +517,24 @@ class ProjectStore:
                 trash.mkdir(exist_ok=True)
                 staged = trash / f"{project_id}-{uuid.uuid4().hex}"
                 project_dir.rename(staged)
+                try:
+                    self._append_system_audit(
+                        {
+                            "id": uuid.uuid4().hex,
+                            "timestamp": utc_now(),
+                            "user_id": actor["id"],
+                            "user_name": actor["name"],
+                            "action": "project_deleted",
+                            "description": f"удалил(а) проект «{meta['name']}»",
+                            "project_id": project_id,
+                            "target_type": "project",
+                            "target_id": project_id,
+                            "anchor": "project-root",
+                        }
+                    )
+                except Exception:
+                    staged.rename(project_dir)
+                    raise
             shutil.rmtree(staged)
 
     def get_meta(self, project_id: str) -> dict[str, Any]:
