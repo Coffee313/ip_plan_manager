@@ -92,6 +92,8 @@ def test_every_successful_change_is_visible_with_actor_and_row_link(tmp_path):
     ).get_json()["data"]
     assert newest[0]["action"] == "site_updated"
     assert newest[0]["user_name"] == "Анна Иванова"
+    assert newest[0]["before"] == {"Название": "Москва"}
+    assert newest[0]["after"] == {"Название": "Москва-2"}
     assert newest[1]["user_name"] == "Анна"
 
 
@@ -122,6 +124,34 @@ def test_audit_log_is_available_to_another_user_with_project_access(tmp_path):
 
     assert response.status_code == 200
     assert response.get_json()["data"][0]["action"] == "project_created"
+
+
+def test_project_rename_audit_contains_old_and_new_name(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    user = register(client, "Редактор")
+    created = client.post(
+        "/api/projects",
+        json={"name": "Старое имя", "pin": "1234"},
+        headers={"X-User-Token": user["access_token"]},
+    ).get_json()["data"]
+    project_id = created["project"]["id"]
+    headers = {
+        "X-User-Token": user["access_token"],
+        "X-Project-ID": project_id,
+        "X-Project-Token": created["access_token"],
+    }
+
+    response = client.put(
+        f"/api/projects/{project_id}",
+        json={"name": "Новое имя"},
+        headers=headers,
+    )
+
+    assert response.status_code == 200
+    event = client.get("/api/audit", headers=headers).get_json()["data"][0]
+    assert event["action"] == "project_renamed"
+    assert event["before"] == {"Название": "Старое имя"}
+    assert event["after"] == {"Название": "Новое имя"}
 
 
 def test_subnet_and_host_changes_are_audited_with_row_links(tmp_path):
@@ -207,6 +237,16 @@ def test_subnet_and_host_changes_are_audited_with_row_links(tmp_path):
     assert by_action["host_updated"]["anchor"] == f"row-{host_id}"
     assert by_action["host_deleted"]["anchor"] == f"row-{subnet_id}"
     assert by_action["subnet_deleted"]["anchor"] == f"site-{site_id}"
+    assert by_action["subnet_updated"]["before"] == {"CIDR": "10.20.1.0/24"}
+    assert by_action["subnet_updated"]["after"] == {"CIDR": "10.20.2.0/24"}
+    assert by_action["host_updated"]["before"] == {
+        "IP": "10.20.2.10",
+        "Имя": "srv",
+    }
+    assert by_action["host_updated"]["after"] == {
+        "IP": "10.20.2.11",
+        "Имя": "srv-2",
+    }
 
 
 def test_audit_write_failure_rolls_back_workspace_and_revision(tmp_path, monkeypatch):

@@ -11,7 +11,8 @@ import uuid
 import zipfile
 from pathlib import Path, PurePosixPath
 
-from project_store import ProjectStore
+from ipplan_core import Workspace
+from project_store import ProjectStore, utc_now
 
 
 def _validated_members(archive: zipfile.ZipFile) -> tuple[dict, list[zipfile.ZipInfo]]:
@@ -178,6 +179,97 @@ def restore_backup(backup: Path, store: ProjectStore | None = None) -> int:
                     rollback_users.unlink(missing_ok=True)
 
     return int(manifest.get("project_count", len(manifest["project_ids"])))
+
+
+def list_project_backups(store: ProjectStore, project_id: str) -> list[dict]:
+    available = []
+    for path in sorted(store.backups_root.glob("ipplan-backup-*.zip"), reverse=True):
+        try:
+            with zipfile.ZipFile(path) as archive:
+                manifest, _ = _validated_members(archive)
+            if project_id not in manifest["project_ids"]:
+                continue
+            project = next(
+                (item for item in manifest.get("projects", []) if item.get("id") == project_id),
+                {},
+            )
+            available.append({
+                "filename": path.name,
+                "created_at": manifest.get("created_at"),
+                "revision": project.get("revision"),
+                "size": path.stat().st_size,
+            })
+        except (OSError, ValueError, zipfile.BadZipFile, KeyError):
+            continue
+    return available
+
+
+def restore_project_backup(
+    backup: Path, project_id: str, actor: dict, store: ProjectStore
+) -> int:
+    backup = Path(backup).resolve()
+    if backup.parent != store.backups_root.resolve() or not backup.is_file():
+        raise ValueError("Бэкап не найден")
+
+    with zipfile.ZipFile(backup) as archive:
+        manifest, members = _validated_members(archive)
+        if project_id not in manifest["project_ids"]:
+            raise ValueError("В этом бэкапе нет выбранного проекта")
+        with tempfile.TemporaryDirectory(prefix="ipplan-project-restore-", dir=store.data_root) as tmp:
+            staged = Path(tmp) / project_id
+            staged.mkdir()
+            prefix = ("projects", project_id)
+            for member in members:
+                parts = PurePosixPath(member.filename).parts
+                if member.is_dir() or parts[:2] != prefix:
+                    continue
+                destination = staged.joinpath(*parts[2:])
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                with archive.open(member) as source, destination.open("wb") as target:
+                    shutil.copyfileobj(source, target)
+
+            # Fully load the staged workspace before touching the live project.
+            Workspace(staged).state_json()
+            with store.project_lock(project_id):
+                live = store.project_dir(project_id)
+                current_meta = store._read_meta_unlocked(live)
+                restored_meta = store._read_meta_unlocked(staged)
+                for key in ("id", "creator_user_id", "pin_hash", "access_token_hashes"):
+                    restored_meta[key] = current_meta.get(key)
+                restored_meta["revision"] = int(current_meta.get("revision", 0)) + 1
+                restored_meta["updated_at"] = utc_now()
+                store._write_meta_unlocked(staged, restored_meta)
+                store._append_audit_unlocked(staged, actor, {
+                    "action": "project_restored",
+                    "description": f"восстановил(а) проект из бэкапа {backup.name}",
+                    "target_type": "project", "target_id": project_id,
+                    "anchor": "project-root",
+                })
+
+                snapshot = {
+                    path.relative_to(live): path.read_bytes()
+                    for path in live.rglob("*")
+                    if path.is_file() and path.name != ".lock"
+                }
+                try:
+                    for path in list(live.rglob("*")):
+                        if path.is_file() and path.name != ".lock":
+                            path.unlink()
+                    for source in staged.rglob("*"):
+                        if source.is_file() and source.name != ".lock":
+                            destination = live / source.relative_to(staged)
+                            destination.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(source, destination)
+                except Exception:
+                    for path in list(live.rglob("*")):
+                        if path.is_file() and path.name != ".lock":
+                            path.unlink()
+                    for relative, content in snapshot.items():
+                        destination = live / relative
+                        destination.parent.mkdir(parents=True, exist_ok=True)
+                        destination.write_bytes(content)
+                    raise
+                return restored_meta["revision"]
 
 
 def main() -> int:

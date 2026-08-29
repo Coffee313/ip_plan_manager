@@ -119,7 +119,26 @@ function toast(message, error = false) {
 }
 
 function updateUserControls() {
-  $("userProfileBtn").textContent = currentUser?.name || "Пользователь";
+  const name = currentUser?.name || "Пользователь";
+  $("userAvatar").textContent = userInitial(currentUser?.name);
+  $("userProfileBtn").title = name;
+  $("userProfileBtn").setAttribute("aria-label", `Профиль пользователя: ${name}`);
+}
+
+function userInitial(name) {
+  const value = String(name || "").trim();
+  return value ? Array.from(value)[0].toLocaleUpperCase("ru-RU") : "?";
+}
+
+function closeHeaderMenu() {
+  $("headerMenu").hidden = true;
+  $("headerMenuBtn").setAttribute("aria-expanded", "false");
+}
+
+function toggleHeaderMenu() {
+  const opening = $("headerMenu").hidden;
+  $("headerMenu").hidden = !opening;
+  $("headerMenuBtn").setAttribute("aria-expanded", String(opening));
 }
 
 function openUserDialog() {
@@ -274,18 +293,25 @@ function updateProjectControls() {
   const hasAccess = hasProject && !!currentProjectToken();
   const project = currentProject();
 
-  $("renameProjectBtn").disabled = !hasAccess;
+  $("renameProjectBtn").disabled = !hasAccess || !project?.can_delete;
+  $("renameProjectBtn").title = hasAccess && !project?.can_delete
+    ? "Переименовать проект может только его создатель"
+    : "";
   $("deleteProjectBtn").disabled = !hasAccess || !project?.can_delete;
   $("deleteProjectBtn").title = hasAccess && !project?.can_delete
     ? "Удалить проект может только его создатель"
     : "";
   $("auditBtn").disabled = !currentUser;
   $("addSiteBtn").disabled = !hasAccess;
+  $("undoBtn").disabled = !hasAccess;
   $("collapseAllBtn").disabled = !hasAccess;
+  $("backupsBtn").disabled = !hasAccess || !project?.can_delete;
+  $("backupsBtn").title = hasAccess && !project?.can_delete
+    ? "Резервными копиями может управлять только владелец проекта"
+    : "";
   $("importLabel").classList.toggle("disabled", !hasAccess);
 
   if (!hasAccess) {
-    $("addSubnetBtn").disabled = true;
     $("searchInput").disabled = true;
     $("exportBtn").classList.add("disabled");
     $("exportBtn").setAttribute("aria-disabled", "true");
@@ -622,6 +648,12 @@ function focusAuditTarget(anchor, action = "") {
   setTimeout(() => target.classList.remove(highlightClass), 1900);
 }
 
+function formatAuditChangeValues(values) {
+  return Object.entries(values || {})
+    .map(([label, value]) => `${label}: ${String(value ?? "") || "—"}`)
+    .join(" · ");
+}
+
 function renderAuditLog(events) {
   const list = $("auditList");
   list.innerHTML = "";
@@ -646,11 +678,31 @@ function renderAuditLog(events) {
     const description = document.createElement("div");
     description.className = "audit-event-description";
     description.textContent = event.description || "Изменил(а) IP-план";
+    const changes = document.createElement("div");
+    changes.className = "audit-changes";
+    if (event.before && event.after) {
+      const before = document.createElement("div");
+      before.className = "audit-change audit-change-before";
+      const beforeLabel = document.createElement("span");
+      beforeLabel.textContent = "До";
+      const beforeValue = document.createElement("div");
+      beforeValue.textContent = formatAuditChangeValues(event.before);
+      before.append(beforeLabel, beforeValue);
+
+      const after = document.createElement("div");
+      after.className = "audit-change audit-change-after";
+      const afterLabel = document.createElement("span");
+      afterLabel.textContent = "После";
+      const afterValue = document.createElement("div");
+      afterValue.textContent = formatAuditChangeValues(event.after);
+      after.append(afterLabel, afterValue);
+      changes.append(before, after);
+    }
     const time = document.createElement("div");
     time.className = "audit-event-time";
     time.textContent = new Date(event.timestamp).toLocaleString("ru-RU");
 
-    link.append(actor, description, time);
+    link.append(actor, description, changes, time);
     link.addEventListener("click", clickEvent => {
       clickEvent.preventDefault();
       history.replaceState(null, "", `#${anchor}`);
@@ -700,15 +752,24 @@ function render() {
   if (!currentProjectId) {
     $("sourceName").textContent = "Выберите или создайте проект";
     updateProjectControls();
+    const cards = projects.map(project => `
+      <button class="project-tile" type="button" data-open-project="${esc(project.id)}">
+        <span class="project-tile-icon">${esc(userInitial(project.name))}</span>
+        <span><strong>${esc(project.name)}</strong><small>${project.pin_set ? "Защищен PIN" : "PIN по умолчанию"}</small></span>
+      </button>`).join("");
     sitesEl.innerHTML = `
-      <div class="empty-card project-start">
-        <strong>Проект не открыт</strong>
-        <div style="margin-top:8px">Создайте новый проект или выберите существующий в верхней панели.</div>
-        <div class="empty-start-actions">
-          <button class="btn primary" id="emptyNewProjectBtn">+ Создать проект</button>
-        </div>
-      </div>`;
+      <section class="project-picker">
+        <div class="project-picker-heading"><h2>Выберите проект</h2><p>Откройте один из доступных проектов.</p></div>
+        <div class="project-tiles">${cards || '<div class="empty-card">Доступных проектов пока нет.</div>'}</div>
+        <button class="btn primary" id="emptyNewProjectBtn">+ Создать проект</button>
+      </section>`;
     $("emptyNewProjectBtn").onclick = () => openProjectDialog("create");
+    sitesEl.querySelectorAll("[data-open-project]").forEach(card => {
+      card.onclick = async () => {
+        try { await openProject(card.dataset.openProject); }
+        catch (error) { toast(error.message, true); }
+      };
+    });
     return;
   }
 
@@ -734,7 +795,6 @@ function render() {
     : `${projectName} · новый IP-план`;
 
   const hasSites = !!state?.sites?.length;
-  $("addSubnetBtn").disabled = !hasSites;
   $("searchInput").disabled = !hasSites;
   updateProjectControls();
 
@@ -791,10 +851,10 @@ function render() {
             <th>VLAN Name</th>
             <th>Comment</th>
             <th>Zone</th>
-            <th>Site</th>
-            <th>Description / Name</th>
-            <th>Role</th>
-            <th>Actions</th>
+            <th>Площадка</th>
+            <th>Описание / Имя</th>
+            <th>Роль</th>
+            <th>Действия</th>
           </tr></thead>
           <tbody></tbody>
         </table>
@@ -1032,8 +1092,8 @@ function appendNodes(tbody, site, nodes, depth, ancestorIds) {
       <td></td>
       <td>
         <div class="actions">
-          <button class="btn tiny" data-add-child="${node.id}">+ subnet</button>
-          <button class="btn tiny" data-add-host="${node.id}">+ host</button>
+          <button class="btn tiny" data-add-child="${node.id}">+ Подсеть</button>
+          <button class="btn tiny" data-add-host="${node.id}">+ Хост</button>
           <button class="btn tiny danger" data-delete-subnet="${node.id}">Удал.</button>
         </div>
       </td>`;
@@ -1613,6 +1673,64 @@ async function exportExcel() {
   }
 }
 
+async function undoOwnChange() {
+  if (!currentProjectId || !currentProjectToken()) return;
+  try {
+    await api("/api/undo", {method: "POST"});
+    toast("Ваше изменение отменено");
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+}
+
+function renderBackups(backups) {
+  const list = $("backupsList");
+  if (!backups.length) {
+    list.innerHTML = '<div class="empty-card">Резервных копий пока нет.</div>';
+    return;
+  }
+  list.innerHTML = backups.map(backup => {
+    const created = backup.created_at ? new Date(backup.created_at).toLocaleString("ru-RU") : "Дата неизвестна";
+    const size = `${Math.max(1, Math.round(Number(backup.size || 0) / 1024))} КБ`;
+    return `<div class="backup-item">
+      <div><strong>${esc(created)}</strong><small>Ревизия: ${esc(backup.revision ?? "—")} · ${esc(size)}</small></div>
+      <button class="btn secondary" type="button" data-restore-backup="${esc(backup.filename)}">Восстановить</button>
+    </div>`;
+  }).join("");
+  list.querySelectorAll("[data-restore-backup]").forEach(button => {
+    button.onclick = () => restoreProjectBackup(button.dataset.restoreBackup);
+  });
+}
+
+async function loadBackups() {
+  renderBackups(await api(`/api/projects/${currentProjectId}/backups`));
+}
+
+async function openBackupsDialog() {
+  closeHeaderMenu();
+  if (!currentProject()?.can_delete) return;
+  $("backupsList").innerHTML = '<div class="empty-card">Загрузка…</div>';
+  $("backupsDialog").showModal();
+  try { await loadBackups(); } catch (error) { toast(error.message, true); }
+}
+
+async function createProjectBackup() {
+  try {
+    await api(`/api/projects/${currentProjectId}/backups`, {method: "POST"});
+    toast("Бэкап создан");
+    await loadBackups();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function restoreProjectBackup(filename) {
+  if (!confirm("Восстановить проект из этой резервной копии? Текущее состояние проекта будет заменено.")) return;
+  try {
+    state = await api(`/api/projects/${currentProjectId}/backups/${encodeURIComponent(filename)}/restore`, {method: "POST"});
+    $("backupsDialog").close();
+    collapseAllSubnets();
+    toast("Проект восстановлен из бэкапа");
+  } catch (error) { toast(error.message, true); }
+}
+
 async function refresh() {
   if (!currentProjectId) {
     state = null;
@@ -1651,17 +1769,37 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("userForm").onsubmit = saveUserProfile;
-  $("userProfileBtn").onclick = openUserDialog;
+  $("userProfileBtn").onclick = () => {
+    closeHeaderMenu();
+    openUserDialog();
+  };
   $("userDialog").addEventListener("cancel", event => {
     if (!currentUser) event.preventDefault();
   });
-  $("auditBtn").onclick = openAuditPanel;
+  $("headerMenuBtn").onclick = event => {
+    event.stopPropagation();
+    toggleHeaderMenu();
+  };
+  $("headerMenu").onclick = event => event.stopPropagation();
+  $("auditBtn").onclick = async () => {
+    closeHeaderMenu();
+    await openAuditPanel();
+  };
   $("closeAuditBtn").onclick = closeAuditPanel;
   $("collapseAllBtn").onclick = collapseAllSubnets;
+  $("undoBtn").onclick = undoOwnChange;
 
   $("newProjectBtn").onclick = () => openProjectDialog("create");
-  $("renameProjectBtn").onclick = () => openProjectDialog("rename");
-  $("deleteProjectBtn").onclick = deleteCurrentProject;
+  $("renameProjectBtn").onclick = () => {
+    closeHeaderMenu();
+    openProjectDialog("rename");
+  };
+  $("deleteProjectBtn").onclick = async () => {
+    closeHeaderMenu();
+    await deleteCurrentProject();
+  };
+  $("backupsBtn").onclick = openBackupsDialog;
+  $("createBackupBtn").onclick = createProjectBackup;
   $("projectForm").onsubmit = saveProject;
   $("unlockForm").onsubmit = unlockProject;
   $("projectSelect").onchange = async e => {
@@ -1673,12 +1811,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   $("addSiteBtn").onclick = openSiteCreate;
-  $("addSubnetBtn").onclick = () => {
-    if (!state?.sites?.length) return;
-    openSubnetCreate();
-  };
 
   $("fileInput").onchange = e => {
+    closeHeaderMenu();
     const file = e.target.files?.[0];
     if (!currentProjectId) {
       toast("Сначала откройте проект", true);
@@ -1687,7 +1822,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     e.target.value = "";
   };
-  $("exportBtn").onclick = exportExcel;
+  $("exportBtn").onclick = async () => {
+    closeHeaderMenu();
+    await exportExcel();
+  };
+
+  document.addEventListener("click", closeHeaderMenu);
+  document.addEventListener("keydown", event => {
+    if (event.key === "Escape") closeHeaderMenu();
+  });
 
   $("searchInput").oninput = applySearch;
   $("siteForm").onsubmit = createSite;

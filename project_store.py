@@ -3,12 +3,14 @@ from __future__ import annotations
 import base64
 import hashlib
 import hmac
+import ipaddress
 import json
 import os
 import secrets
 import shutil
 import uuid
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -270,6 +272,11 @@ class ProjectStore:
             "target_id": event["target_id"],
             "anchor": event["anchor"],
         }
+        for key in ("before", "after", "undo"):
+            if isinstance(event.get(key), dict) and event[key]:
+                stored[key] = event[key]
+        if event.get("undoes_event_id"):
+            stored["undoes_event_id"] = event["undoes_event_id"]
         events.append(stored)
         path = self._audit_path(project_dir)
         tmp = path.with_suffix(".json.tmp")
@@ -452,10 +459,15 @@ class ProjectStore:
             raise ValueError("Название проекта слишком длинное")
 
         with self.registry_lock:
-            self._ensure_unique_name(name, exclude_id=project_id)
             with self.project_lock(project_id):
                 project_dir = self.project_dir(project_id)
                 meta = self._read_meta_unlocked(project_dir)
+                if not actor or meta.get("creator_user_id") != actor.get("id"):
+                    raise ProjectAccessDenied(
+                        "Переименовать проект может только его создатель"
+                    )
+                self._ensure_unique_name(name, exclude_id=project_id)
+                old_name = meta["name"]
                 meta["name"] = name
                 meta["updated_at"] = utc_now()
                 meta["revision"] = int(meta.get("revision", 0)) + 1
@@ -466,7 +478,9 @@ class ProjectStore:
                         actor,
                         {
                             "action": "project_renamed",
-                            "description": f"переименовал(а) проект в «{name}»",
+                            "description": "переименовал(а) проект",
+                            "before": {"Название": old_name},
+                            "after": {"Название": name},
                             "target_type": "project",
                             "target_id": project_id,
                             "anchor": "project-root",
@@ -569,6 +583,161 @@ class ProjectStore:
         with self.project_lock(project_id):
             events = self._read_audit_unlocked(self.project_dir(project_id))
             return list(reversed(events))
+
+    @staticmethod
+    def _undo_values(workspace: Workspace, kind: str, target_id: str) -> dict[str, Any]:
+        base_kind = kind.removesuffix("_created")
+        if base_kind == "site":
+            site = workspace.find_site(target_id)
+            return {"Название": site["name"], "CIDR": site["cidr"]}
+        if base_kind == "subnet":
+            subnet = workspace.find_subnet(target_id)[1]
+            values = list(subnet.get("values") or []) + [None] * 17
+            return {
+                "CIDR": subnet["cidr"], "Gateway": values[1] or "", "VRF": values[2] or "",
+                "VLAN": values[3] if values[3] is not None else "", "VLAN Name": values[4] or "",
+                "Комментарий": values[5] or "", "Зона": values[6] or "",
+                "Площадка": values[7] or "", "Описание": values[8] or "",
+            }
+        if base_kind == "host":
+            host = workspace.find_host(target_id)[2]
+            values = list(host.get("values") or []) + [None] * 17
+            return {
+                "IP": values[0] or "", "Имя": values[10] or "", "Роль": values[11] or "",
+                "Подсистема": values[9] or "", "CPU": values[12] or "", "RAM": values[13] or "",
+                "Диск": values[14] or "", "Тип": values[15] or "", "Статус": values[16] or "",
+                "Комментарий": values[5] or "",
+            }
+        raise ValueError("Это изменение нельзя отменить")
+
+    @staticmethod
+    def _apply_undo_values(workspace: Workspace, kind: str, target_id: str, values: dict[str, Any]) -> Any:
+        if kind == "site_created":
+            site = workspace.find_site(target_id)
+            if site.get("subnets"):
+                raise ValueError("Площадка изменена позже; отмена затронула бы изменения коллеги")
+            return workspace.delete_site(target_id)
+        if kind == "subnet_created":
+            site, subnet = workspace.find_subnet(target_id)
+            target_network = ipaddress.ip_network(subnet["cidr"], strict=False)
+            has_children = any(
+                other["id"] != target_id
+                and ipaddress.ip_network(other["cidr"], strict=False).subnet_of(target_network)
+                for other in site.get("subnets", [])
+            )
+            if subnet.get("hosts") or has_children:
+                raise ValueError("Подсеть изменена позже; отмена затронула бы изменения коллеги")
+            return workspace.delete_subnet(target_id)
+        if kind == "host_created":
+            return workspace.delete_host(target_id)
+        if kind == "host_deleted":
+            site, subnet = workspace.find_subnet(values["subnet_id"])
+            snapshot = deepcopy(values["snapshot"])
+            restored_ip = ipaddress.ip_address(snapshot["values"][0])
+            if workspace.most_specific_subnet_for_ip(site, restored_ip)["id"] != subnet["id"]:
+                raise ValueError("Структура подсетей изменена позже; хост нельзя безопасно восстановить")
+            for current_subnet in site["subnets"]:
+                for host in current_subnet.get("hosts", []):
+                    if host["id"] == target_id or str(host["values"][0]) == str(restored_ip):
+                        raise ValueError("IP хоста уже используется; восстановление отменено")
+            subnet.setdefault("hosts", []).append(snapshot)
+            subnet["hosts"].sort(key=lambda host: int(ipaddress.ip_address(host["values"][0])))
+            workspace.save()
+            return {"restored": target_id}
+        if kind == "subnet_deleted":
+            site = workspace.find_site(values["site_id"])
+            snapshots = deepcopy(values["snapshots"])
+            existing_ids = {subnet["id"] for subnet in site["subnets"]}
+            restored_ids = {subnet["id"] for subnet in snapshots}
+            if existing_ids & restored_ids:
+                raise ValueError("Одна из удаленных подсетей уже существует")
+            for subnet in snapshots:
+                workspace.validate_subnet_network(
+                    site, ipaddress.ip_network(subnet["cidr"], strict=False)
+                )
+
+            existing_host_ids = {
+                host["id"] for subnet in site["subnets"] for host in subnet.get("hosts", [])
+            }
+            existing_ips = {
+                str(host["values"][0])
+                for subnet in site["subnets"] for host in subnet.get("hosts", [])
+            }
+            prospective = site["subnets"] + snapshots
+            for subnet in snapshots:
+                for host in subnet.get("hosts", []):
+                    host_ip = ipaddress.ip_address(host["values"][0])
+                    if host["id"] in existing_host_ids or str(host_ip) in existing_ips:
+                        raise ValueError("Данные хоста уже используются; восстановление отменено")
+                    matching = [
+                        candidate for candidate in prospective
+                        if host_ip in ipaddress.ip_network(candidate["cidr"], strict=False)
+                    ]
+                    best = max(
+                        matching,
+                        key=lambda candidate: ipaddress.ip_network(candidate["cidr"], strict=False).prefixlen,
+                    )
+                    if best["id"] != subnet["id"]:
+                        raise ValueError("Структура подсетей изменена позже; восстановление небезопасно")
+            site["subnets"].extend(snapshots)
+            site["subnets"].sort(
+                key=lambda subnet: (
+                    int(ipaddress.ip_network(subnet["cidr"], strict=False).network_address),
+                    ipaddress.ip_network(subnet["cidr"], strict=False).prefixlen,
+                )
+            )
+            workspace.save()
+            return {"restored": [subnet["id"] for subnet in snapshots]}
+        if kind == "site":
+            return workspace.update_site(target_id, {"name": values["Название"], "cidr": values["CIDR"]})
+        if kind == "subnet":
+            return workspace.update_subnet(target_id, {
+                "cidr": values["CIDR"], "gateway": values["Gateway"], "vrf": values["VRF"],
+                "vlan_number": values["VLAN"], "vlan_name": values["VLAN Name"],
+                "comment": values["Комментарий"], "zone": values["Зона"],
+                "site": values["Площадка"], "description": values["Описание"],
+            })
+        if kind == "host":
+            return workspace.update_host(target_id, {
+                "ip": values["IP"], "name": values["Имя"], "role": values["Роль"],
+                "subsystem": values["Подсистема"], "cpu": values["CPU"], "ram": values["RAM"],
+                "disk": values["Диск"], "type": values["Тип"], "status": values["Статус"],
+                "comment": values["Комментарий"],
+            })
+        raise ValueError("Это изменение нельзя отменить")
+
+    def undo_last_change(self, project_id: str, actor: dict[str, Any], expected_revision: int | None = None) -> tuple[dict[str, Any], int]:
+        events = self.audit_log(project_id)
+        undone = {event.get("undoes_event_id") for event in events if event.get("undoes_event_id")}
+        original = next((
+            event for event in events
+            if event.get("user_id") == actor["id"]
+            and event.get("action") != "change_undone"
+            and event.get("id") not in undone
+        ), None)
+        if original is None:
+            raise ValueError("Нет ваших изменений, которые можно отменить")
+        if not isinstance(original.get("undo"), dict):
+            raise ValueError("Последнее ваше изменение нельзя безопасно отменить автоматически")
+        undo = original["undo"]
+        kind, target_id = undo["kind"], undo["target_id"]
+
+        def action(workspace: Workspace) -> dict[str, Any]:
+            if kind.endswith("_deleted"):
+                self._apply_undo_values(workspace, kind, target_id, undo)
+            else:
+                if self._undo_values(workspace, kind, target_id) != undo["after"]:
+                    raise ValueError("Объект изменен позже; отмена затронула бы изменения коллеги")
+                self._apply_undo_values(workspace, kind, target_id, undo["before"])
+            return {"event_id": original["id"], "target_id": target_id}
+
+        return self.mutate(project_id, action, expected_revision, actor=actor, audit_builder=lambda workspace, result: {
+            "action": "change_undone",
+            "description": f"отменил(а) свое изменение: {original['description']}",
+            "before": original.get("after", {}), "after": original.get("before", {}),
+            "target_type": original["target_type"], "target_id": target_id,
+            "anchor": original["anchor"], "undoes_event_id": original["id"],
+        })
 
     def mutate(
         self,

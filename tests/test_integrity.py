@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import io
-from zipfile import BadZipFile
+import re
+from zipfile import BadZipFile, ZipFile
 
 import pytest
 from openpyxl import Workbook
@@ -22,6 +23,17 @@ def workbook_bytes(site_cidr: str = "10.0.0.0/16") -> bytes:
     return output.getvalue()
 
 
+def normalized_xlsx_payload(data: bytes) -> dict[str, bytes]:
+    with ZipFile(io.BytesIO(data)) as archive:
+        payload = {name: archive.read(name) for name in archive.namelist()}
+    payload["docProps/core.xml"] = re.sub(
+        rb"<dcterms:modified[^>]*>.*?</dcterms:modified>",
+        b"",
+        payload["docProps/core.xml"],
+    )
+    return payload
+
+
 def test_failed_import_preserves_previous_source_and_export(tmp_path):
     store = ProjectStore(tmp_path / "data")
     project, _ = store.create_project("P", "1234")
@@ -33,7 +45,11 @@ def test_failed_import_preserves_previous_source_and_export(tmp_path):
         store.import_excel(project_id, b"not an xlsx", "plan.xlsx", 1)
 
     after, _ = store.export_excel(project_id)
-    assert after.getvalue() == before.getvalue()
+    # XLSX ZIP headers and core.xml carry the save timestamp. Compare every
+    # archived payload after removing only that volatile metadata.
+    assert normalized_xlsx_payload(after.getvalue()) == normalized_xlsx_payload(
+        before.getvalue()
+    )
     assert store.get_revision(project_id) == 1
 
 

@@ -3,9 +3,13 @@ from __future__ import annotations
 import os
 import threading
 import webbrowser
+import ipaddress
+from copy import deepcopy
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
+from backup import cleanup_old_backups, create_backup
 from project_store import (
     ProjectAccessDenied,
     ProjectConflict,
@@ -13,6 +17,7 @@ from project_store import (
     ProjectStore,
     UserAccessDenied,
 )
+from restore_backup import list_project_backups, restore_project_backup
 
 
 def create_app(project_store: ProjectStore | None = None) -> Flask:
@@ -20,6 +25,48 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
     app.extensions["project_store"] = store
+
+    def changed_values(
+        before: dict[str, object], after: dict[str, object]
+    ) -> tuple[dict[str, object], dict[str, object]]:
+        keys = list(dict.fromkeys([*before, *after]))
+        changed = [key for key in keys if before.get(key) != after.get(key)]
+        return (
+            {key: before.get(key, "") for key in changed},
+            {key: after.get(key, "") for key in changed},
+        )
+
+    def site_values(site: dict) -> dict[str, object]:
+        return {"Название": site["name"], "CIDR": site["cidr"]}
+
+    def subnet_values(subnet: dict) -> dict[str, object]:
+        values = list(subnet.get("values") or []) + [None] * 17
+        return {
+            "CIDR": subnet["cidr"],
+            "Gateway": values[1] or "",
+            "VRF": values[2] or "",
+            "VLAN": values[3] if values[3] is not None else "",
+            "VLAN Name": values[4] or "",
+            "Комментарий": values[5] or "",
+            "Зона": values[6] or "",
+            "Площадка": values[7] or "",
+            "Описание": values[8] or "",
+        }
+
+    def host_values(host: dict) -> dict[str, object]:
+        values = list(host.get("values") or []) + [None] * 17
+        return {
+            "IP": values[0] or "",
+            "Имя": values[10] or "",
+            "Роль": values[11] or "",
+            "Подсистема": values[9] or "",
+            "CPU": values[12] or "",
+            "RAM": values[13] or "",
+            "Диск": values[14] or "",
+            "Тип": values[15] or "",
+            "Статус": values[16] or "",
+            "Комментарий": values[5] or "",
+        }
 
     def ok(data=None, revision: int | None = None):
         body = {"ok": True, "data": data}
@@ -245,6 +292,73 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
         except Exception as exc:
             return fail(exc, 404)
 
+    @app.post("/api/undo")
+    def undo_own_change():
+        try:
+            pid = project_id()
+            user = current_user()
+            assert user is not None
+            authorize(pid)
+            result, revision = store.undo_last_change(pid, user, expected_revision())
+            return ok(result, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except ProjectConflict as exc:
+            return fail(exc, 409, exc.current_revision)
+        except Exception as exc:
+            return fail(exc)
+
+    def require_project_owner(pid: str) -> dict:
+        user = current_user()
+        assert user is not None
+        authorize(pid)
+        if not store.is_creator(pid, user["id"]):
+            raise ProjectAccessDenied("Только владелец проекта может управлять бэкапами")
+        return user
+
+    @app.get("/api/projects/<pid>/backups")
+    def get_project_backups(pid: str):
+        try:
+            require_project_owner(pid)
+            return ok(list_project_backups(store, pid))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/projects/<pid>/backups")
+    def create_project_backup(pid: str):
+        try:
+            require_project_owner(pid)
+            path = create_backup(store)
+            cleanup_old_backups(store)
+            return ok({"filename": path.name})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/projects/<pid>/backups/<filename>/restore")
+    def restore_project_from_backup(pid: str, filename: str):
+        try:
+            user = require_project_owner(pid)
+            backup_path = store.backups_root / Path(filename).name
+            revision = restore_project_backup(backup_path, pid, user, store)
+            state, _ = store.state(pid)
+            return ok(state, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/system-audit")
     def get_system_audit_log():
         try:
@@ -320,6 +434,10 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "description": (
                         f"создал(а) площадку «{workspace.find_site(result['id'])['name']}»"
                     ),
+                    "undo": {
+                        "kind": "site_created", "target_id": result["id"], "before": {},
+                        "after": site_values(workspace.find_site(result["id"])),
+                    },
                     "target_type": "site",
                     "target_id": result["id"],
                     "anchor": f"site-{result['id']}",
@@ -332,14 +450,27 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.put("/api/sites/<site_id>")
     def update_site(site_id: str):
+        changed: dict[str, dict[str, object]] = {}
+
+        def action(workspace):
+            before = site_values(workspace.find_site(site_id))
+            result = workspace.update_site(site_id, request.get_json(force=True))
+            after = site_values(workspace.find_site(site_id))
+            changed["before"], changed["after"] = changed_values(
+                before, after
+            )
+            changed["undo"] = {"kind": "site", "target_id": site_id, "before": before, "after": after}
+            return result
+
         try:
             return project_mutation(
-                lambda workspace: workspace.update_site(
-                    site_id, request.get_json(force=True)
-                ),
+                action,
                 lambda workspace, result: {
                     "action": "site_updated",
                     "description": f"изменил(а) площадку «{result['name']}»",
+                    "before": changed["before"],
+                    "after": changed["after"],
+                    "undo": changed["undo"],
                     "target_type": "site",
                     "target_id": site_id,
                     "anchor": f"site-{site_id}",
@@ -385,6 +516,10 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "description": (
                         f"создал(а) подсеть {workspace.find_subnet(result['id'])[1]['cidr']}"
                     ),
+                    "undo": {
+                        "kind": "subnet_created", "target_id": result["id"], "before": {},
+                        "after": subnet_values(workspace.find_subnet(result["id"])[1]),
+                    },
                     "target_type": "subnet",
                     "target_id": result["id"],
                     "anchor": f"row-{result['id']}",
@@ -397,14 +532,27 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.put("/api/subnets/<subnet_id>")
     def update_subnet(subnet_id: str):
+        changed: dict[str, dict[str, object]] = {}
+
+        def action(workspace):
+            before = subnet_values(workspace.find_subnet(subnet_id)[1])
+            result = workspace.update_subnet(subnet_id, request.get_json(force=True))
+            after = subnet_values(workspace.find_subnet(subnet_id)[1])
+            changed["before"], changed["after"] = changed_values(
+                before, after
+            )
+            changed["undo"] = {"kind": "subnet", "target_id": subnet_id, "before": before, "after": after}
+            return result
+
         try:
             return project_mutation(
-                lambda workspace: workspace.update_subnet(
-                    subnet_id, request.get_json(force=True)
-                ),
+                action,
                 lambda workspace, result: {
                     "action": "subnet_updated",
                     "description": f"изменил(а) подсеть {result['cidr']}",
+                    "before": changed["before"],
+                    "after": changed["after"],
+                    "undo": changed["undo"],
                     "target_type": "subnet",
                     "target_id": subnet_id,
                     "anchor": f"row-{subnet_id}",
@@ -417,11 +565,18 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.delete("/api/subnets/<subnet_id>")
     def delete_subnet(subnet_id: str):
-        deleted: dict[str, str] = {}
+        deleted: dict[str, object] = {}
 
         def action(workspace):
             site, subnet = workspace.find_subnet(subnet_id)
             deleted["cidr"] = subnet["cidr"]
+            deleted["before"] = subnet_values(subnet)
+            deleted["site_id"] = site["id"]
+            target = ipaddress.ip_network(subnet["cidr"], strict=False)
+            deleted["snapshots"] = deepcopy([
+                item for item in site["subnets"]
+                if ipaddress.ip_network(item["cidr"], strict=False).subnet_of(target)
+            ])
             parent_id = workspace.subnet_parent_id(site, subnet)
             deleted["anchor"] = (
                 f"site-{site['id']}" if parent_id == site["id"] else f"row-{parent_id}"
@@ -434,6 +589,12 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                 lambda workspace, result: {
                     "action": "subnet_deleted",
                     "description": f"удалил(а) подсеть {deleted['cidr']}",
+                    "before": deleted["before"],
+                    "after": {"Состояние": "Удалено"},
+                    "undo": {
+                        "kind": "subnet_deleted", "target_id": subnet_id,
+                        "site_id": deleted["site_id"], "snapshots": deleted["snapshots"],
+                    },
                     "target_type": "subnet",
                     "target_id": subnet_id,
                     "anchor": deleted["anchor"],
@@ -458,6 +619,10 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                     "description": (
                         f"создал(а) хост {workspace.find_host(result['id'])[2]['values'][0]}"
                     ),
+                    "undo": {
+                        "kind": "host_created", "target_id": result["id"], "before": {},
+                        "after": host_values(workspace.find_host(result["id"])[2]),
+                    },
                     "target_type": "host",
                     "target_id": result["id"],
                     "anchor": f"row-{result['id']}",
@@ -470,16 +635,29 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.put("/api/hosts/<host_id>")
     def update_host(host_id: str):
+        changed: dict[str, dict[str, object]] = {}
+
+        def action(workspace):
+            before = host_values(workspace.find_host(host_id)[2])
+            result = workspace.update_host(host_id, request.get_json(force=True))
+            after = host_values(workspace.find_host(host_id)[2])
+            changed["before"], changed["after"] = changed_values(
+                before, after
+            )
+            changed["undo"] = {"kind": "host", "target_id": host_id, "before": before, "after": after}
+            return result
+
         try:
             return project_mutation(
-                lambda workspace: workspace.update_host(
-                    host_id, request.get_json(force=True)
-                ),
+                action,
                 lambda workspace, result: {
                     "action": "host_updated",
                     "description": (
                         f"изменил(а) хост {workspace.find_host(host_id)[2]['values'][0]}"
                     ),
+                    "before": changed["before"],
+                    "after": changed["after"],
+                    "undo": changed["undo"],
                     "target_type": "host",
                     "target_id": host_id,
                     "anchor": f"row-{host_id}",
@@ -492,12 +670,15 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
     @app.delete("/api/hosts/<host_id>")
     def delete_host(host_id: str):
-        deleted: dict[str, str] = {}
+        deleted: dict[str, object] = {}
 
         def action(workspace):
             site, subnet, host = workspace.find_host(host_id)
             deleted["ip"] = str(host["values"][0])
             deleted["anchor"] = f"row-{subnet['id']}"
+            deleted["before"] = host_values(host)
+            deleted["subnet_id"] = subnet["id"]
+            deleted["snapshot"] = deepcopy(host)
             return workspace.delete_host(host_id)
 
         try:
@@ -506,6 +687,12 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
                 lambda workspace, result: {
                     "action": "host_deleted",
                     "description": f"удалил(а) хост {deleted['ip']}",
+                    "before": deleted["before"],
+                    "after": {"Состояние": "Удалено"},
+                    "undo": {
+                        "kind": "host_deleted", "target_id": host_id,
+                        "subnet_id": deleted["subnet_id"], "snapshot": deleted["snapshot"],
+                    },
                     "target_type": "host",
                     "target_id": host_id,
                     "anchor": deleted["anchor"],

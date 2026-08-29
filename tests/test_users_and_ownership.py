@@ -89,3 +89,37 @@ def test_only_creator_can_delete_project(tmp_path):
     assert event["action"] == "project_deleted"
     assert event["project_id"] == project_id
     assert event["user_name"] == "Владелец"
+
+
+def test_only_creator_can_rename_project(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    owner = register(client, "Владелец")
+    colleague = register(client, "Коллега")
+    created = client.post(
+        "/api/projects", json={"name": "Исходное имя", "pin": "1234"},
+        headers=user_headers(owner["access_token"]),
+    ).get_json()["data"]
+    project_id = created["project"]["id"]
+    unlocked = client.post(
+        f"/api/projects/{project_id}/unlock", json={"pin": "1234"},
+        headers=user_headers(colleague["access_token"]),
+    ).get_json()["data"]
+
+    denied = client.put(
+        f"/api/projects/{project_id}", json={"name": "Имя коллеги"},
+        headers={
+            "X-User-Token": colleague["access_token"],
+            "X-Project-Token": unlocked["access_token"],
+        },
+    )
+    assert denied.status_code == 403
+
+    allowed = client.put(
+        f"/api/projects/{project_id}", json={"name": "Имя владельца"},
+        headers={
+            "X-User-Token": owner["access_token"],
+            "X-Project-Token": created["access_token"],
+        },
+    )
+    assert allowed.status_code == 200
+    assert allowed.get_json()["data"]["name"] == "Имя владельца"

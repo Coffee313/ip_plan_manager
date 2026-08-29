@@ -13,27 +13,40 @@
       <div id="sourceName" class="brand-subtitle">Excel не загружен</div>
     </div>
     <div class="toolbar">
-      <select id="projectSelect" class="project-select" aria-label="Проект">
-        <option value="">Выберите проект</option>
-      </select>
-      <button id="newProjectBtn" class="btn secondary">+ Проект</button>
-      <button id="renameProjectBtn" class="btn secondary">Переименовать</button>
-      <button id="deleteProjectBtn" class="btn danger-outline">Удалить проект</button>
-      <button id="auditBtn" class="btn secondary" type="button">Журнал</button>
-      <button id="userProfileBtn" class="btn secondary" type="button">Пользователь</button>
-      <span id="syncStatus" class="sync-status">Нет проекта</span>
+      <div class="toolbar-group project-tools">
+        <select id="projectSelect" class="project-select" aria-label="Проект">
+          <option value="">Выберите проект</option>
+        </select>
+        <button id="newProjectBtn" class="btn primary">+ Проект</button>
+        <span id="syncStatus" class="sync-status">Нет проекта</span>
+      </div>
 
-      <span class="toolbar-separator"></span>
+      <div class="toolbar-group plan-tools">
+        <button id="addSiteBtn" class="btn secondary">+ Площадка</button>
+        <button id="undoBtn" class="btn secondary" type="button">Отменить</button>
+        <button id="collapseAllBtn" class="btn secondary" type="button">Свернуть все</button>
+        <input id="searchInput" class="search" placeholder="Поиск по IP, VLAN, описанию">
+      </div>
 
-      <label id="importLabel" class="btn secondary">
-        Импорт Excel
-        <input id="fileInput" type="file" accept=".xlsx,.xlsm" hidden>
-      </label>
-      <button id="exportBtn" class="btn secondary" type="button">Экспорт Excel</button>
-      <button id="addSiteBtn" class="btn secondary">+ Площадка</button>
-      <button id="addSubnetBtn" class="btn primary">+ Подсеть</button>
-      <button id="collapseAllBtn" class="btn secondary" type="button">Свернуть все</button>
-      <input id="searchInput" class="search" placeholder="Поиск по IP, VLAN, описанию">
+      <button id="userProfileBtn" class="user-profile-btn" type="button" aria-label="Профиль пользователя">
+        <span id="userAvatar" class="user-avatar" aria-hidden="true">?</span>
+      </button>
+
+      <div class="header-menu-wrap">
+        <button id="headerMenuBtn" class="header-menu-btn" type="button"
+                aria-label="Открыть меню" aria-haspopup="true" aria-expanded="false">⋯</button>
+        <div id="headerMenu" class="header-menu" role="menu" hidden>
+          <button id="auditBtn" class="header-menu-item" type="button" role="menuitem">Журнал изменений</button>
+          <button id="renameProjectBtn" class="header-menu-item" type="button" role="menuitem">Переименовать проект</button>
+          <label id="importLabel" class="header-menu-item" role="menuitem">
+            Импорт Excel
+            <input id="fileInput" type="file" accept=".xlsx,.xlsm" hidden>
+          </label>
+          <button id="exportBtn" class="header-menu-item" type="button" role="menuitem">Экспорт Excel</button>
+          <button id="backupsBtn" class="header-menu-item" type="button" role="menuitem">Резервные копии</button>
+          <button id="deleteProjectBtn" class="header-menu-item danger-menu-item" type="button" role="menuitem">Удалить проект</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -63,6 +76,23 @@
     </div>
     <div id="auditList" class="audit-list"></div>
   </aside>
+
+  <dialog id="backupsDialog" class="modal small-modal">
+    <div class="modal-header">
+      <div>
+        <h2>Резервные копии</h2>
+        <p>Автоматический бэкап создается раз в сутки. Владелец может создать копию вручную.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close="backupsDialog" aria-label="Закрыть">×</button>
+    </div>
+    <div class="backup-toolbar">
+      <button id="createBackupBtn" class="btn primary" type="button">Создать бэкап</button>
+    </div>
+    <div id="backupsList" class="backups-list"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn secondary" data-close="backupsDialog">Закрыть</button>
+    </div>
+  </dialog>
 
   <dialog id="userDialog" class="modal small-modal">
     <form method="dialog" id="userForm">
