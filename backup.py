@@ -9,7 +9,7 @@ import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from filelock import Timeout
+from filelock import FileLock, Timeout
 
 from project_store import ProjectStore
 
@@ -111,14 +111,38 @@ def cleanup_old_backups(store: ProjectStore) -> int:
     return removed
 
 
+def run_daily_backup_if_due(
+    store: ProjectStore, now: datetime | None = None
+) -> Path | None:
+    """Create one catch-up backup per local calendar day across all workers."""
+    current = now or datetime.now().astimezone()
+    day = current.date().isoformat()
+    marker = store.data_root / ".last-daily-backup"
+    lock = FileLock(str(store.data_root / ".daily-backup.lock"), timeout=30)
+
+    with lock:
+        try:
+            if marker.read_text(encoding="utf-8").strip() == day:
+                return None
+        except FileNotFoundError:
+            pass
+
+        path = create_backup(store)
+        cleanup_old_backups(store)
+        temporary = marker.with_suffix(".tmp")
+        temporary.write_text(day, encoding="utf-8")
+        temporary.replace(marker)
+        return path
+
+
 def main() -> int:
     try:
         store = ProjectStore()
-        path = create_backup(store)
-        removed = cleanup_old_backups(store)
-        print(f"Backup created: {path}")
-        if removed:
-            print(f"Old backups removed: {removed}")
+        path = run_daily_backup_if_due(store)
+        if path is None:
+            print("Daily backup already exists for today")
+        else:
+            print(f"Backup created: {path}")
         return 0
     except Exception as exc:
         print(f"Backup failed: {exc}", file=sys.stderr)

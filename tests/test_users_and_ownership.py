@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+import io
+
+from openpyxl import Workbook, load_workbook
+
 from app import create_app
 from project_store import ProjectStore
 
@@ -12,6 +16,18 @@ def register(client, name: str) -> dict:
 
 def user_headers(token: str) -> dict[str, str]:
     return {"X-User-Token": token}
+
+
+def workbook_bytes() -> bytes:
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "IP Plan"
+    sheet.cell(2, 1, "10.0.0.0/16")
+    sheet.cell(2, 9, "Площадка")
+    output = io.BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def test_user_registration_profile_edit_and_restart_persistence(tmp_path):
@@ -123,3 +139,66 @@ def test_only_creator_can_rename_project(tmp_path):
     )
     assert allowed.status_code == 200
     assert allowed.get_json()["data"]["name"] == "Имя владельца"
+
+
+def test_only_creator_can_import_excel(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    owner = register(client, "Владелец")
+    colleague = register(client, "Коллега")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers=user_headers(owner["access_token"]),
+    ).get_json()["data"]
+    project_id = created["project"]["id"]
+    unlocked = client.post(
+        f"/api/projects/{project_id}/unlock", json={"pin": "1234"},
+        headers=user_headers(colleague["access_token"]),
+    ).get_json()["data"]
+
+    denied = client.post(
+        "/api/import",
+        data={"file": (io.BytesIO(workbook_bytes()), "plan.xlsx")},
+        headers={
+            "X-User-Token": colleague["access_token"],
+            "X-Project-ID": project_id,
+            "X-Project-Token": unlocked["access_token"],
+        },
+    )
+    assert denied.status_code == 403
+
+    template = client.get(
+        "/api/template", headers=user_headers(owner["access_token"])
+    )
+    workbook = load_workbook(io.BytesIO(template.data))
+    sheet = workbook["IP Plan"]
+    sheet.cell(2, 1, "10.0.0.0/16")
+    sheet.cell(2, 9, "Площадка")
+    filled_template = io.BytesIO()
+    workbook.save(filled_template)
+    filled_template.seek(0)
+
+    allowed = client.post(
+        "/api/import",
+        data={"file": (filled_template, "plan.xlsx")},
+        headers={
+            "X-User-Token": owner["access_token"],
+            "X-Project-ID": project_id,
+            "X-Project-Token": created["access_token"],
+        },
+    )
+    assert allowed.status_code == 200
+
+
+def test_authenticated_user_can_download_empty_excel_template(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    user = register(client, "Пользователь")
+
+    response = client.get(
+        "/api/template", headers=user_headers(user["access_token"])
+    )
+
+    assert response.status_code == 200
+    assert response.headers["Content-Disposition"].startswith("attachment;")
+    workbook = load_workbook(io.BytesIO(response.data))
+    assert workbook["IP Plan"]["A1"].value == "RFC 1918"
+    assert workbook["IP Plan"]["Q1"].value == "статус развертывания"

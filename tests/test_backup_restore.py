@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import os
 import zipfile
+from datetime import datetime, timezone
 
 import pytest
 
-from backup import cleanup_old_backups, create_backup
+from backup import cleanup_old_backups, create_backup, run_daily_backup_if_due
 from project_store import ProjectStore, UserAccessDenied
 from restore_backup import restore_backup
 
@@ -32,6 +33,19 @@ def test_backup_manifest_matches_archived_projects(tmp_path):
     assert set(manifest["project_ids"]) == {first["id"], second["id"]}
     assert archived_ids == set(manifest["project_ids"])
     assert manifest["complete"] is True
+
+
+def test_daily_backup_is_created_once_per_local_calendar_day(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    store.create_project("Проект", "1234")
+    now = datetime(2026, 8, 29, 0, 0, tzinfo=timezone.utc)
+
+    first = run_daily_backup_if_due(store, now)
+    second = run_daily_backup_if_due(store, now)
+
+    assert first is not None and first.is_file()
+    assert second is None
+    assert len(list(store.backups_root.glob("ipplan-backup-*.zip"))) == 1
 
 
 def test_backup_fails_instead_of_silently_omitting_corrupt_project(tmp_path):

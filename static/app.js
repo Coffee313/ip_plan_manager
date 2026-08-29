@@ -309,7 +309,11 @@ function updateProjectControls() {
   $("backupsBtn").title = hasAccess && !project?.can_delete
     ? "Резервными копиями может управлять только владелец проекта"
     : "";
-  $("importLabel").classList.toggle("disabled", !hasAccess);
+  const canImport = hasAccess && !!project?.can_delete;
+  $("importLabel").classList.toggle("disabled", !canImport);
+  $("importLabel").title = hasAccess && !project?.can_delete
+    ? "Импортировать Excel может только создатель проекта"
+    : "";
 
   if (!hasAccess) {
     $("searchInput").disabled = true;
@@ -805,18 +809,20 @@ function render() {
         <div style="margin-top:8px">Можно начать с нуля, создав первую площадку, или импортировать существующий Excel.</div>
         <div class="empty-start-actions">
           <button class="btn primary" id="emptyAddSiteBtn">+ Создать площадку</button>
-          <label class="btn secondary">
+          ${currentProject()?.can_delete ? `<label class="btn secondary">
             Импорт Excel
             <input id="emptyFileInput" type="file" accept=".xlsx,.xlsm" hidden>
-          </label>
+          </label>` : ""}
         </div>
       </div>`;
     $("emptyAddSiteBtn").onclick = openSiteCreate;
-    $("emptyFileInput").onchange = e => {
-      const file = e.target.files?.[0];
-      if (file) importExcel(file);
-      e.target.value = "";
-    };
+    if ($("emptyFileInput")) {
+      $("emptyFileInput").onchange = e => {
+        const file = e.target.files?.[0];
+        if (file) importExcel(file);
+        e.target.value = "";
+      };
+    }
     return;
   }
 
@@ -1673,6 +1679,28 @@ async function exportExcel() {
   }
 }
 
+async function downloadEmptyTemplate() {
+  try {
+    const response = await fetch("/api/template", {
+      headers: {"X-User-Token": userToken}
+    });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try { message = (await response.json()).error || message; } catch (_) {}
+      throw new Error(message);
+    }
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "IP_Plan_web.xlsx";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    URL.revokeObjectURL(url);
+  } catch (error) { toast(error.message, true); }
+}
+
 async function undoOwnChange() {
   if (!currentProjectId || !currentProjectToken()) return;
   try {
@@ -1825,6 +1853,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("exportBtn").onclick = async () => {
     closeHeaderMenu();
     await exportExcel();
+  };
+  $("templateBtn").onclick = async () => {
+    closeHeaderMenu();
+    await downloadEmptyTemplate();
   };
 
   document.addEventListener("click", closeHeaderMenu);

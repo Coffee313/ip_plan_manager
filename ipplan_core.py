@@ -937,6 +937,12 @@ class Workspace:
         output.seek(0)
         return output, "IP_Plan_web.xlsx"
 
+    @classmethod
+    def empty_template_bytes(cls) -> tuple[io.BytesIO, str]:
+        workspace = cls.__new__(cls)
+        workspace.sites = []
+        return workspace.export_blank_workbook()
+
     def capture_row_template(self, ws, row: int) -> dict[str, Any]:
         return {
             "styles": [copy.copy(ws.cell(row, c)._style) for c in range(1, 18)],

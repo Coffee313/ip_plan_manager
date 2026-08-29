@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+import ipaddress
 import os
 import threading
 import webbrowser
-import ipaddress
 from copy import deepcopy
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
-from backup import cleanup_old_backups, create_backup
+from backup import cleanup_old_backups, create_backup, run_daily_backup_if_due
+from ipplan_core import Workspace
 from project_store import (
     ProjectAccessDenied,
     ProjectConflict,
@@ -20,11 +22,48 @@ from project_store import (
 from restore_backup import list_project_backups, restore_project_backup
 
 
-def create_app(project_store: ProjectStore | None = None) -> Flask:
+def create_app(
+    project_store: ProjectStore | None = None,
+    enable_automatic_backups: bool | None = None,
+) -> Flask:
+    automatic_backups = (
+        project_store is None
+        if enable_automatic_backups is None
+        else enable_automatic_backups
+    )
     store = project_store or ProjectStore()
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = 50 * 1024 * 1024
     app.extensions["project_store"] = store
+
+    backup_thread_started = threading.Event()
+    backup_thread_lock = threading.Lock()
+
+    def daily_backup_loop() -> None:
+        while True:
+            try:
+                run_daily_backup_if_due(store)
+            except Exception:
+                app.logger.exception("Не удалось создать ежедневный бэкап")
+            now = datetime.now().astimezone()
+            next_midnight = datetime.combine(
+                now.date() + timedelta(days=1), datetime.min.time(), tzinfo=now.tzinfo
+            )
+            threading.Event().wait(max(1, (next_midnight - now).total_seconds()))
+
+    @app.before_request
+    def start_daily_backup_thread() -> None:
+        if not automatic_backups or backup_thread_started.is_set():
+            return
+        with backup_thread_lock:
+            if backup_thread_started.is_set():
+                return
+            backup_thread_started.set()
+            threading.Thread(
+                target=daily_backup_loop,
+                name="ipplan-daily-backup",
+                daemon=True,
+            ).start()
 
     def changed_values(
         before: dict[str, object], after: dict[str, object]
@@ -373,9 +412,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
     def import_excel():
         try:
             pid = project_id()
-            user = current_user()
-            assert user is not None
-            authorize(pid)
+            user = require_project_owner(pid)
             if "file" not in request.files:
                 raise ValueError("Файл не выбран")
             uploaded = request.files["file"]
@@ -397,6 +434,25 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
             return fail(exc, 403)
         except ProjectConflict as exc:
             return fail(exc, 409, exc.current_revision)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/template")
+    def download_empty_template():
+        try:
+            current_user()
+            content, filename = Workspace.empty_template_bytes()
+            return send_file(
+                content,
+                mimetype=(
+                    "application/vnd.openxmlformats-officedocument."
+                    "spreadsheetml.sheet"
+                ),
+                as_attachment=True,
+                download_name=filename,
+            )
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except Exception as exc:
             return fail(exc)
 
@@ -711,7 +767,7 @@ def create_app(project_store: ProjectStore | None = None) -> Flask:
 
 
 store = ProjectStore()
-app = create_app(store)
+app = create_app(store, enable_automatic_backups=True)
 
 
 def open_browser():
