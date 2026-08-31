@@ -659,6 +659,16 @@ function formatAuditChangeValues(values) {
     .join(" · ");
 }
 
+async function undoAuditEvent(event) {
+  const actor = event.user_name || "неизвестного пользователя";
+  if (!confirm(`Отменить изменение пользователя «${actor}»?`)) return;
+  try {
+    await api(`/api/undo/${encodeURIComponent(event.id)}`, {method: "POST"});
+    toast(`Изменение пользователя «${actor}» отменено`);
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+}
+
 function renderAuditLog(events) {
   const list = $("auditList");
   list.innerHTML = "";
@@ -674,6 +684,8 @@ function renderAuditLog(events) {
     const anchor = /^[A-Za-z0-9_-]+$/.test(event.anchor || "")
       ? event.anchor
       : "project-root";
+    const row = document.createElement("div");
+    row.className = "audit-event-row";
     const link = document.createElement("a");
     link.className = "audit-event";
     link.href = `#${anchor}`;
@@ -713,7 +725,18 @@ function renderAuditLog(events) {
       history.replaceState(null, "", `#${anchor}`);
       focusAuditTarget(anchor, event.action);
     });
-    list.appendChild(link);
+    row.appendChild(link);
+    if (event.can_owner_undo) {
+      link.classList.add("has-owner-undo");
+      const undoButton = document.createElement("button");
+      undoButton.type = "button";
+      undoButton.className = "btn tiny audit-owner-undo";
+      undoButton.textContent = "Отменить изменение";
+      undoButton.title = "Доступно только владельцу проекта";
+      undoButton.onclick = () => undoAuditEvent(event);
+      row.appendChild(undoButton);
+    }
+    list.appendChild(row);
   }
 }
 

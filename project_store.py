@@ -713,19 +713,35 @@ class ProjectStore:
             })
         raise ValueError("Это изменение нельзя отменить")
 
-    def undo_last_change(self, project_id: str, actor: dict[str, Any], expected_revision: int | None = None) -> tuple[dict[str, Any], int]:
+    def _undo_change(
+        self,
+        project_id: str,
+        actor: dict[str, Any],
+        expected_revision: int | None = None,
+        selected_event_id: str | None = None,
+    ) -> tuple[dict[str, Any], int]:
         events = self.audit_log(project_id)
         undone = {event.get("undoes_event_id") for event in events if event.get("undoes_event_id")}
-        original = next((
-            event for event in events
-            if event.get("user_id") == actor["id"]
-            and event.get("action") != "change_undone"
-            and event.get("id") not in undone
-        ), None)
+        if selected_event_id is None:
+            original = next((
+                event for event in events
+                if event.get("user_id") == actor["id"]
+                and event.get("action") != "change_undone"
+                and event.get("id") not in undone
+            ), None)
+        else:
+            original = next((
+                event for event in events
+                if event.get("id") == selected_event_id
+                and event.get("action") != "change_undone"
+                and event.get("id") not in undone
+            ), None)
         if original is None:
-            raise ValueError("Нет ваших изменений, которые можно отменить")
+            if selected_event_id is None:
+                raise ValueError("Нет ваших изменений, которые можно отменить")
+            raise ValueError("Изменение не найдено или уже отменено")
         if not isinstance(original.get("undo"), dict):
-            raise ValueError("Последнее ваше изменение нельзя безопасно отменить автоматически")
+            raise ValueError("Это изменение нельзя безопасно отменить автоматически")
         undo = original["undo"]
         kind, target_id = undo["kind"], undo["target_id"]
 
@@ -755,13 +771,46 @@ class ProjectStore:
                 self._apply_undo_values(workspace, kind, target_id, undo["before"])
             return {"event_id": original["id"], "target_id": target_id}
 
+        own_change = original.get("user_id") == actor["id"]
+        undo_description = (
+            f"отменил(а) свое изменение: {original['description']}"
+            if own_change
+            else (
+                f"отменил(а) изменение пользователя "
+                f"{original.get('user_name') or 'Неизвестный пользователь'}: "
+                f"{original['description']}"
+            )
+        )
         return self.mutate(project_id, action, expected_revision, actor=actor, audit_builder=lambda workspace, result: {
             "action": "change_undone",
-            "description": f"отменил(а) свое изменение: {original['description']}",
+            "description": undo_description,
             "before": original.get("after", {}), "after": original.get("before", {}),
             "target_type": original["target_type"], "target_id": target_id,
             "anchor": original["anchor"], "undoes_event_id": original["id"],
         })
+
+    def undo_last_change(
+        self,
+        project_id: str,
+        actor: dict[str, Any],
+        expected_revision: int | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        return self._undo_change(project_id, actor, expected_revision)
+
+    def undo_event_as_owner(
+        self,
+        project_id: str,
+        actor: dict[str, Any],
+        event_id: str,
+        expected_revision: int | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        if not self.is_creator(project_id, actor["id"]):
+            raise ProjectAccessDenied(
+                "Только владелец проекта может отменять изменения коллег"
+            )
+        return self._undo_change(
+            project_id, actor, expected_revision, selected_event_id=event_id
+        )
 
     def mutate(
         self,

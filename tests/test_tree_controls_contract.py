@@ -88,3 +88,14 @@ def test_application_has_an_svg_favicon():
     assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
     assert favicon.exists()
     assert "<svg" in favicon.read_text(encoding="utf-8")
+
+
+def test_owner_can_undo_selected_audit_event_from_journal():
+    javascript = (ROOT / "static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "static/style.css").read_text(encoding="utf-8")
+
+    assert "event.can_owner_undo" in javascript
+    assert "async function undoAuditEvent(event)" in javascript
+    assert "`/api/undo/${encodeURIComponent(event.id)}`" in javascript
+    assert "audit-owner-undo" in javascript
+    assert ".audit-owner-undo" in css

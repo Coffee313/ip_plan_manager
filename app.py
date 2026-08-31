@@ -323,9 +323,24 @@ def create_app(
     def get_audit_log():
         try:
             pid = project_id()
-            current_user()
+            user = current_user()
+            assert user is not None
             authorize(pid)
-            return ok(store.audit_log(pid))
+            events = store.audit_log(pid)
+            undone = {
+                event.get("undoes_event_id")
+                for event in events
+                if event.get("undoes_event_id")
+            }
+            is_owner = store.is_creator(pid, user["id"])
+            for event in events:
+                event["can_owner_undo"] = bool(
+                    is_owner
+                    and isinstance(event.get("undo"), dict)
+                    and event.get("action") != "change_undone"
+                    and event.get("id") not in undone
+                )
+            return ok(events)
         except UserAccessDenied as exc:
             return fail(exc, 401)
         except ProjectAccessDenied as exc:
@@ -341,6 +356,26 @@ def create_app(
             assert user is not None
             authorize(pid)
             result, revision = store.undo_last_change(pid, user, expected_revision())
+            return ok(result, revision)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except ProjectConflict as exc:
+            return fail(exc, 409, exc.current_revision)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/undo/<event_id>")
+    def undo_change_as_owner(event_id: str):
+        try:
+            pid = project_id()
+            user = current_user()
+            assert user is not None
+            authorize(pid)
+            result, revision = store.undo_event_as_owner(
+                pid, user, event_id, expected_revision()
+            )
             return ok(result, revision)
         except UserAccessDenied as exc:
             return fail(exc, 401)

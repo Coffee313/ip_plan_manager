@@ -191,6 +191,89 @@ def test_user_can_undo_own_deletion_of_colleague_host_and_subnet(tmp_path):
     assert restored["hosts"][0]["id"] == host_id
 
 
+def test_owner_can_undo_selected_colleague_change(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец")
+    colleague = register(client, "Коллега")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]
+    pid = created["project"]["id"]
+    colleague_token = client.post(
+        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
+        headers={"X-User-Token": colleague["access_token"]},
+    ).get_json()["data"]["access_token"]
+    made = client.post(
+        "/api/sites", json={"name": "Коллеги", "cidr": "10.20.0.0/16"},
+        headers=project_headers(colleague, pid, colleague_token, 0),
+    )
+    event_id = store.audit_log(pid)[0]["id"]
+
+    owner_audit = client.get(
+        "/api/audit",
+        headers=project_headers(owner, pid, created["access_token"]),
+    ).get_json()["data"]
+    colleague_audit = client.get(
+        "/api/audit",
+        headers=project_headers(colleague, pid, colleague_token),
+    ).get_json()["data"]
+    assert owner_audit[0]["can_owner_undo"] is True
+    assert colleague_audit[0]["can_owner_undo"] is False
+
+    undone = client.post(
+        f"/api/undo/{event_id}",
+        headers=project_headers(
+            owner, pid, created["access_token"], made.get_json()["revision"]
+        ),
+    )
+
+    assert undone.status_code == 200
+    state, revision = store.state(pid)
+    assert revision == 2
+    assert state["sites"] == []
+    assert "изменение пользователя Коллега" in store.audit_log(pid)[0]["description"]
+    audit_after_undo = client.get(
+        "/api/audit",
+        headers=project_headers(owner, pid, created["access_token"]),
+    ).get_json()["data"]
+    assert all(not event["can_owner_undo"] for event in audit_after_undo)
+
+
+def test_colleague_cannot_use_owner_undo_endpoint(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец")
+    colleague = register(client, "Коллега")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]
+    pid = created["project"]["id"]
+    colleague_token = client.post(
+        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
+        headers={"X-User-Token": colleague["access_token"]},
+    ).get_json()["data"]["access_token"]
+    made = client.post(
+        "/api/sites", json={"name": "Коллеги", "cidr": "10.20.0.0/16"},
+        headers=project_headers(colleague, pid, colleague_token, 0),
+    )
+    event_id = store.audit_log(pid)[0]["id"]
+
+    denied = client.post(
+        f"/api/undo/{event_id}",
+        headers=project_headers(
+            colleague, pid, colleague_token, made.get_json()["revision"]
+        ),
+    )
+
+    assert denied.status_code == 403
+    state, revision = store.state(pid)
+    assert revision == 1
+    assert [site["name"] for site in state["sites"]] == ["Коллеги"]
+
+
 def test_only_owner_can_create_and_restore_project_backup(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()

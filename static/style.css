@@ -998,6 +998,7 @@ body.audit-open .topbar {
 .audit-header p { margin: 4px 0 0; color: var(--muted); font-size: 12px; }
 .audit-list { display: flex; flex-direction: column; gap: 8px; }
 .audit-empty { padding: 24px 8px; color: var(--muted); text-align: center; }
+.audit-event-row { position: relative; min-width: 0; }
 .audit-event {
   display: block;
   padding: 11px 12px;
@@ -1008,6 +1009,17 @@ body.audit-open .topbar {
   background: #fff;
 }
 .audit-event:hover { border-color: #8dbca3; background: #f7fbf8; }
+.audit-event.has-owner-undo { padding-bottom: 51px; }
+.audit-owner-undo {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  min-height: 31px;
+  border-color: #f3c7c3;
+  color: var(--danger);
+  background: #fff7f6;
+}
+.audit-owner-undo:hover { border-color: #d92d20; background: #fff1ef; }
 .audit-event strong { font-size: 13px; }
 .audit-event-description { margin-top: 4px; font-size: 12px; line-height: 1.4; }
 .audit-changes { display: grid; gap: 5px; margin-top: 8px; }
