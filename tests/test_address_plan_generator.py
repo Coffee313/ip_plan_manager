@@ -34,6 +34,34 @@ def sample_payload() -> dict:
     }
 
 
+def k2_cloud_payload() -> dict:
+    return {
+        "mode": "k2_cloud",
+        "k2_cloud": {
+            "name": "K2 Cloud",
+            "supernet": "172.27.128.0/17",
+            "zones": ["COMP", "VOL"],
+            "workload_vpcs": [{"name": "VPC INFRA"}],
+            "appliance_vpcs": [
+                {
+                    "name": "VPC FW", "type": "firewall",
+                    "zone_scope": "all", "cluster": True,
+                },
+                {
+                    "name": "VPC S2S VPN", "type": "s2s_vpn",
+                    "zone_scope": "all", "cluster": False,
+                },
+                {
+                    "name": "VPC RA VPN", "type": "ravpn",
+                    "zone_scope": "primary", "cluster": True,
+                },
+            ],
+            "include_transit_vpc": True,
+            "transit_vpc_name": "VPC TRANSIT",
+        },
+    }
+
+
 def register(client, name: str) -> dict:
     return client.post("/api/users", json={"name": name}).get_json()["data"]
 
@@ -102,6 +130,73 @@ def test_generator_rejects_capacity_and_gateway_errors():
         raise AssertionError("Ожидалась ошибка шлюза")
 
 
+def test_k2_cloud_generator_builds_vpcs_zones_and_tgw_transit_subnets():
+    result = generate_address_plan(k2_cloud_payload())
+
+    assert result["mode"] == "k2_cloud"
+    assert result["routing_label"] == "VPC"
+    assert result["total_subnets"] == 29
+    site = result["sites"][0]
+    assert site["name"] == "K2 Cloud"
+    assert site["cidr"] == "172.27.128.0/17"
+
+    infra = [item for item in site["subnets"] if item["vrf"] == "VPC INFRA"]
+    assert [(item["cidr"], item["zone"], item["description"]) for item in infra] == [
+        ("172.27.128.0/22", "COMP, VOL", "Сегмент VPC INFRA"),
+        ("172.27.128.0/24", "COMP", "COMP - подсеть виртуальных машин"),
+        ("172.27.129.0/28", "COMP", "COMP - транзитная подсеть к TGW"),
+        ("172.27.130.0/24", "VOL", "VOL - подсеть виртуальных машин"),
+        ("172.27.131.0/28", "VOL", "VOL - транзитная подсеть к TGW"),
+    ]
+
+    firewall = [item for item in site["subnets"] if item["vrf"] == "VPC FW"]
+    assert [(item["cidr"], item["description"]) for item in firewall[:5]] == [
+        ("172.27.136.0/23", "Сегмент VPC FW"),
+        ("172.27.136.0/25", "COMP - Firewall outside"),
+        ("172.27.136.128/28", "COMP - Firewall inside"),
+        ("172.27.136.144/28", "COMP - Firewall interlink"),
+        ("172.27.136.160/28", "COMP - транзитная подсеть к TGW"),
+    ]
+
+    s2s = [item for item in site["subnets"] if item["vrf"] == "VPC S2S VPN"]
+    assert all("interlink" not in item["description"].lower() for item in s2s)
+    assert any(item["description"] == "COMP - S2S VPN outside" for item in s2s)
+    assert any(item["description"] == "VOL - S2S VPN inside" for item in s2s)
+
+    ravpn = [item for item in site["subnets"] if item["vrf"] == "VPC RA VPN"]
+    assert ravpn[0]["cidr"] == "172.27.132.0/22"
+    assert ravpn[0]["description"] == "Сегмент пользователей RA VPN"
+    assert {item["zone"] for item in ravpn[1:]} == {"COMP"}
+    assert any(item["description"] == "COMP - RA VPN interlink" for item in ravpn)
+
+    transit = [item for item in site["subnets"] if item["vrf"] == "VPC TRANSIT"]
+    assert [item["cidr"] for item in transit] == [
+        "172.27.140.0/23",
+        "172.27.140.0/24",
+        "172.27.141.0/24",
+    ]
+
+
+def test_k2_cloud_generator_rejects_duplicate_vpcs_and_insufficient_capacity():
+    duplicate = k2_cloud_payload()
+    duplicate["k2_cloud"]["appliance_vpcs"][0]["name"] = "VPC INFRA"
+    try:
+        generate_address_plan(duplicate)
+    except ValueError as error:
+        assert "VPC INFRA" in str(error) and "повторяется" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка повторяющегося VPC")
+
+    too_small = k2_cloud_payload()
+    too_small["k2_cloud"]["supernet"] = "192.0.2.0/24"
+    try:
+        generate_address_plan(too_small)
+    except ValueError as error:
+        assert "не помещаются" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка емкости K2 Cloud")
+
+
 def test_preview_and_apply_create_one_atomic_audited_plan(tmp_path, monkeypatch):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()
@@ -148,6 +243,39 @@ def test_preview_and_apply_create_one_atomic_audited_plan(tmp_path, monkeypatch)
     assert state_after_undo["sites"] == []
 
 
+def test_k2_cloud_preview_and_apply_persist_vpc_hierarchy(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    user = register(client, "Архитектор")
+    created = client.post(
+        "/api/projects",
+        json={"name": "Облако", "pin": "1234"},
+        headers={"X-User-Token": user["access_token"]},
+    ).get_json()["data"]
+    project_id = created["project"]["id"]
+    auth = headers(user, project_id, created["access_token"])
+
+    preview = client.post(
+        "/api/address-plan/preview", json=k2_cloud_payload(), headers=auth
+    )
+    applied = client.post(
+        "/api/address-plan/apply", json=k2_cloud_payload(), headers=auth
+    )
+
+    assert preview.status_code == 200
+    assert preview.get_json()["data"]["routing_label"] == "VPC"
+    assert applied.status_code == 200
+    state, revision = store.state(project_id)
+    assert revision == 1
+    roots = state["sites"][0]["tree"]
+    assert [node["vrf"] for node in roots] == [
+        "VPC INFRA", "VPC RA VPN", "VPC FW", "VPC S2S VPN", "VPC TRANSIT",
+    ]
+    infra = roots[0]
+    assert infra["cidr"] == "172.27.128.0/22"
+    assert len(infra["children"]) == 4
+
+
 def test_apply_rolls_back_all_sites_when_one_conflicts(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()
@@ -187,15 +315,32 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
     for element_id in (
         "generatePlanBtn",
         "generatorDialog",
+        "generatorMode",
+        "standardGeneratorPanel",
+        "k2CloudGeneratorPanel",
         "generatorSites",
         "addGeneratorSiteBtn",
+        "k2WorkloadVpcs",
+        "addK2WorkloadVpcBtn",
+        "k2ApplianceVpcs",
+        "addK2ApplianceVpcBtn",
+        "k2IncludeTransit",
         "previewPlanBtn",
         "applyPlanBtn",
     ):
         assert f'id="{element_id}"' in html
     assert "data-generator-site" in javascript
     assert "data-generator-group" in javascript
+    assert "data-k2-workload-vpc" in javascript
+    assert "data-k2-appliance-vpc" in javascript
+    assert 'mode: "k2_cloud"' in javascript
+    assert "K2 Cloud" in html
+    assert "VPC" in html
+    assert "TGW" in html
+    assert "VRF / VPC" in html
+    assert "VRF / VPC" in javascript
     assert '"/api/address-plan/preview"' in javascript
     assert '"/api/address-plan/apply"' in javascript
     assert '.generator-site-fields { grid-template-columns: minmax(0, 1fr); }' in css
+    assert '.k2-vpc-row { grid-template-columns: minmax(0, 1fr); }' in css
     assert '.generator-modal form { max-width: 100%; overflow-x: hidden; }' in css

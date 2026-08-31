@@ -202,13 +202,58 @@
       <div class="modal-header">
         <div>
           <h2>Генератор адресного плана</h2>
-          <p>Задайте несколько площадок, суперсети и группы подсетей с разными масками.</p>
+          <p>Создайте обычный адресный план или структуру VPC для K2 Cloud.</p>
         </div>
         <button type="button" class="icon-btn" data-close="generatorDialog" aria-label="Закрыть">×</button>
       </div>
 
-      <div id="generatorSites" class="generator-sites"></div>
-      <button id="addGeneratorSiteBtn" class="btn secondary" type="button">+ Добавить площадку</button>
+      <label class="generator-mode-field">Режим
+        <select id="generatorMode">
+          <option value="standard">Стандартный план</option>
+          <option value="k2_cloud">K2 Cloud</option>
+        </select>
+      </label>
+
+      <section id="standardGeneratorPanel">
+        <div id="generatorSites" class="generator-sites"></div>
+        <button id="addGeneratorSiteBtn" class="btn secondary" type="button">+ Добавить площадку</button>
+      </section>
+
+      <section id="k2CloudGeneratorPanel" class="k2-cloud-panel" hidden>
+        <div class="k2-cloud-note">
+          <strong>K2 Cloud</strong>
+          <span>Для VPC виртуальных машин создаются зональные /24 и транзитные /28 к TGW. Для сетевых устройств — outside, inside, TGW и опциональный interlink кластера.</span>
+        </div>
+        <div class="generator-site-fields k2-cloud-fields">
+          <label>Название площадки *<input id="k2SiteName" required value="K2 Cloud"></label>
+          <label>Суперсеть K2 Cloud *<input id="k2Supernet" required placeholder="172.27.128.0/17"></label>
+          <label>Зона 1 *<input id="k2PrimaryZone" required value="COMP"></label>
+          <label>Зона 2 *<input id="k2SecondaryZone" required value="VOL"></label>
+        </div>
+
+        <div class="k2-vpc-section">
+          <div class="generator-groups-heading">
+            <strong>VPC виртуальных машин</strong>
+            <span>На каждый VPC: блок /22, VM /24 и TGW /28 в каждой зоне</span>
+          </div>
+          <div id="k2WorkloadVpcs" class="k2-vpc-list"></div>
+          <button id="addK2WorkloadVpcBtn" class="btn tiny secondary" type="button">+ VPC виртуальных машин</button>
+        </div>
+
+        <div class="k2-vpc-section">
+          <div class="generator-groups-heading">
+            <strong>VPC сетевых устройств</strong>
+            <span>Firewall, S2S VPN и RA VPN</span>
+          </div>
+          <div id="k2ApplianceVpcs" class="k2-vpc-list"></div>
+          <button id="addK2ApplianceVpcBtn" class="btn tiny secondary" type="button">+ VPC сетевых устройств</button>
+        </div>
+
+        <div class="k2-transit-row">
+          <label class="k2-checkbox"><input id="k2IncludeTransit" type="checkbox" checked> Создать VPC TRANSIT между TGW</label>
+          <label>Название транзитного VPC<input id="k2TransitVpcName" value="VPC TRANSIT"></label>
+        </div>
+      </section>
 
       <section class="generator-preview-section">
         <div class="generator-preview-heading">
@@ -244,7 +289,7 @@
       <div class="form-grid">
         <div class="field"><label>CIDR *</label><input id="subnetCIDR" required placeholder="172.17.10.0/24"></div>
         <div class="field"><label>Gateway</label><input id="subnetGateway" placeholder="172.17.10.1"></div>
-        <div class="field"><label>VRF</label><input id="subnetVRF"></div>
+        <div class="field"><label>VRF / VPC</label><input id="subnetVRF"></div>
         <div class="field"><label>VLAN Number</label><input id="subnetVLAN" type="number" min="1" max="4094"></div>
         <div class="field"><label>VLAN Name</label><input id="subnetVLANName"></div>
         <div class="field"><label>Zone</label><input id="subnetZone"></div>

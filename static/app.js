@@ -876,7 +876,7 @@ function render() {
           <thead><tr>
             <th>CIDR / IP</th>
             <th>Gateway</th>
-            <th>VRF</th>
+            <th>VRF / VPC</th>
             <th>VLAN</th>
             <th>VLAN Name</th>
             <th>Comment</th>
@@ -1361,6 +1361,36 @@ function generatorSiteMarkup(index) {
   </section>`;
 }
 
+function k2WorkloadVpcMarkup(name = "VPC INFRA") {
+  return `<div class="k2-vpc-row k2-workload-row" data-k2-workload-vpc>
+    <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC INFRA"></label>
+    <span class="k2-vpc-hint">/22 · VM /24 + TGW /28 в каждой зоне</span>
+    <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
+  </div>`;
+}
+
+function k2ApplianceVpcMarkup({name = "VPC FW", type = "firewall", scope = "all", cluster = true} = {}) {
+  return `<div class="k2-vpc-row k2-appliance-row" data-k2-appliance-vpc>
+    <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC FW"></label>
+    <label>Тип
+      <select data-k2-appliance-type>
+        <option value="firewall" ${type === "firewall" ? "selected" : ""}>Firewall</option>
+        <option value="s2s_vpn" ${type === "s2s_vpn" ? "selected" : ""}>S2S VPN</option>
+        <option value="ravpn" ${type === "ravpn" ? "selected" : ""}>RA VPN</option>
+      </select>
+    </label>
+    <label>Зоны
+      <select data-k2-zone-scope>
+        <option value="all" ${scope === "all" ? "selected" : ""}>Обе зоны</option>
+        <option value="primary" ${scope === "primary" ? "selected" : ""}>Только зона 1</option>
+        <option value="secondary" ${scope === "secondary" ? "selected" : ""}>Только зона 2</option>
+      </select>
+    </label>
+    <label class="k2-checkbox"><input data-k2-cluster type="checkbox" ${cluster ? "checked" : ""}> Кластер: добавить interlink</label>
+    <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
+  </div>`;
+}
+
 function renumberGeneratorSites() {
   $("generatorSites").querySelectorAll("[data-generator-site]").forEach((site, index) => {
     site.querySelector("[data-generator-site-number]").textContent = String(index + 1);
@@ -1379,8 +1409,48 @@ function addGeneratorSite() {
   invalidateGeneratorPreview();
 }
 
-function generatorPayload() {
+function setGeneratorMode() {
+  const k2Mode = $("generatorMode").value === "k2_cloud";
+  $("standardGeneratorPanel").hidden = k2Mode;
+  $("k2CloudGeneratorPanel").hidden = !k2Mode;
+  $("standardGeneratorPanel").querySelectorAll("input, select, button").forEach(control => {
+    control.disabled = k2Mode;
+  });
+  $("k2CloudGeneratorPanel").querySelectorAll("input, select, button").forEach(control => {
+    control.disabled = !k2Mode;
+  });
+  if (k2Mode) {
+    $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
+  }
+  invalidateGeneratorPreview();
+}
+
+function k2CloudPayload() {
   return {
+    mode: "k2_cloud",
+    k2_cloud: {
+      name: $("k2SiteName").value.trim(),
+      supernet: $("k2Supernet").value.trim(),
+      zones: [$("k2PrimaryZone").value.trim(), $("k2SecondaryZone").value.trim()],
+      workload_vpcs: [...$("k2WorkloadVpcs").querySelectorAll("[data-k2-workload-vpc]")].map(row => ({
+        name: row.querySelector("[data-k2-vpc-name]").value.trim()
+      })),
+      appliance_vpcs: [...$("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]")].map(row => ({
+        name: row.querySelector("[data-k2-vpc-name]").value.trim(),
+        type: row.querySelector("[data-k2-appliance-type]").value,
+        zone_scope: row.querySelector("[data-k2-zone-scope]").value,
+        cluster: row.querySelector("[data-k2-cluster]").checked
+      })),
+      include_transit_vpc: $("k2IncludeTransit").checked,
+      transit_vpc_name: $("k2TransitVpcName").value.trim()
+    }
+  };
+}
+
+function generatorPayload() {
+  if ($("generatorMode").value === "k2_cloud") return k2CloudPayload();
+  return {
+    mode: "standard",
     sites: [...$("generatorSites").querySelectorAll("[data-generator-site]")].map(site => ({
       name: site.querySelector("[data-generator-name]").value.trim(),
       supernet: site.querySelector("[data-generator-supernet]").value.trim(),
@@ -1399,16 +1469,17 @@ function generatorPayload() {
 
 function renderGeneratorPreview(preview) {
   $("generatorSummary").textContent = `Площадок: ${preview.sites.length} · Подсетей: ${preview.total_subnets}`;
+  const routingLabel = preview.routing_label || "VRF";
   $("generatorPreview").innerHTML = preview.sites.map(site => {
     const visible = site.subnets.slice(0, 100);
     const rows = visible.map(subnet => `<tr>
-      <td class="mono">${esc(subnet.cidr)}</td><td class="mono">${esc(subnet.gateway || "—")}</td>
+      <td class="mono">${esc(subnet.cidr)}</td><td>${esc(subnet.vrf || "—")}</td><td class="mono">${esc(subnet.gateway || "—")}</td>
       <td>${esc(subnet.vlan_number ?? "—")}</td><td>${esc(subnet.description)}</td>
     </tr>`).join("");
     const remainder = site.subnets.length - visible.length;
     return `<article class="generator-preview-site">
       <div><strong>${esc(site.name)}</strong><span class="mono">${esc(site.cidr)}</span><small>Свободно адресов: ${esc(site.free_addresses)}</small></div>
-      <div class="generator-preview-table"><table><thead><tr><th>CIDR</th><th>Шлюз</th><th>VLAN</th><th>Описание</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="generator-preview-table"><table><thead><tr><th>CIDR</th><th>${esc(routingLabel)}</th><th>Шлюз</th><th>VLAN</th><th>Описание</th></tr></thead><tbody>${rows}</tbody></table></div>
       ${remainder > 0 ? `<small>Еще подсетей: ${remainder}</small>` : ""}
     </article>`;
   }).join("");
@@ -1416,9 +1487,24 @@ function renderGeneratorPreview(preview) {
 
 function openGeneratorDialog() {
   $("generatorSites").innerHTML = "";
+  $("k2SiteName").value = "K2 Cloud";
+  $("k2Supernet").value = "";
+  $("k2PrimaryZone").value = "COMP";
+  $("k2SecondaryZone").value = "VOL";
+  $("k2IncludeTransit").checked = true;
+  $("k2TransitVpcName").value = "VPC TRANSIT";
+  $("k2WorkloadVpcs").innerHTML = ["VPC INFRA", "VPC SECUR", "VPC BUSIN", "VPC DMZ"]
+    .map(name => k2WorkloadVpcMarkup(name)).join("");
+  $("k2ApplianceVpcs").innerHTML = [
+    {name: "VPC FW", type: "firewall", scope: "all", cluster: true},
+    {name: "VPC S2S VPN", type: "s2s_vpn", scope: "all", cluster: true},
+    {name: "VPC RA VPN", type: "ravpn", scope: "primary", cluster: true}
+  ].map(k2ApplianceVpcMarkup).join("");
   $("generatorPreview").innerHTML = "";
   $("generatorSummary").textContent = "Сначала рассчитайте план";
   addGeneratorSite();
+  $("generatorMode").value = "standard";
+  setGeneratorMode();
   generatorPreviewPayload = null;
   $("applyPlanBtn").disabled = true;
   $("generatorDialog").showModal();
@@ -2012,6 +2098,21 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("addSiteBtn").onclick = openSiteCreate;
   $("generatePlanBtn").onclick = openGeneratorDialog;
   $("addGeneratorSiteBtn").onclick = addGeneratorSite;
+  $("generatorMode").onchange = setGeneratorMode;
+  $("addK2WorkloadVpcBtn").onclick = () => {
+    const index = $("k2WorkloadVpcs").children.length + 1;
+    $("k2WorkloadVpcs").insertAdjacentHTML(
+      "beforeend", k2WorkloadVpcMarkup(`VPC VM ${index}`)
+    );
+    invalidateGeneratorPreview();
+  };
+  $("addK2ApplianceVpcBtn").onclick = () => {
+    const index = $("k2ApplianceVpcs").children.length + 1;
+    $("k2ApplianceVpcs").insertAdjacentHTML(
+      "beforeend", k2ApplianceVpcMarkup({name: `VPC FW ${index}`})
+    );
+    invalidateGeneratorPreview();
+  };
   $("previewPlanBtn").onclick = previewGeneratedPlan;
   $("generatorForm").onsubmit = applyGeneratedPlan;
   $("generatorSites").addEventListener("input", invalidateGeneratorPreview);
@@ -2047,6 +2148,19 @@ document.addEventListener("DOMContentLoaded", async () => {
       renumberGeneratorSites();
       invalidateGeneratorPreview();
     }
+  });
+  $("k2CloudGeneratorPanel").addEventListener("input", invalidateGeneratorPreview);
+  $("k2CloudGeneratorPanel").addEventListener("change", event => {
+    if (event.target === $("k2IncludeTransit")) {
+      $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
+    }
+    invalidateGeneratorPreview();
+  });
+  $("k2CloudGeneratorPanel").addEventListener("click", event => {
+    const removeButton = event.target.closest("[data-remove-k2-vpc]");
+    if (!removeButton) return;
+    removeButton.closest("[data-k2-workload-vpc], [data-k2-appliance-vpc]").remove();
+    invalidateGeneratorPreview();
   });
 
   $("fileInput").onchange = e => {
