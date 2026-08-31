@@ -197,6 +197,31 @@ def test_k2_cloud_generator_rejects_duplicate_vpcs_and_insufficient_capacity():
         raise AssertionError("Ожидалась ошибка емкости K2 Cloud")
 
 
+def test_k2_cloud_vpc_limit_includes_optional_transit_vpc():
+    payload = {
+        "mode": "k2_cloud",
+        "k2_cloud": {
+            "name": "K2 Cloud",
+            "supernet": "10.0.0.0/8",
+            "zones": ["COMP", "VOL"],
+            "workload_vpcs": [
+                {"name": f"VPC VM {index}"}
+                for index in range(100)
+            ],
+            "appliance_vpcs": [],
+            "include_transit_vpc": True,
+            "transit_vpc_name": "VPC TRANSIT",
+        },
+    }
+
+    try:
+        generate_address_plan(payload)
+    except ValueError as error:
+        assert "не более 100 VPC" in str(error)
+    else:
+        raise AssertionError("Ожидалось ограничение общего количества VPC")
+
+
 def test_preview_and_apply_create_one_atomic_audited_plan(tmp_path, monkeypatch):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()

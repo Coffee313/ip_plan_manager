@@ -105,7 +105,12 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     raw_appliances = raw.get("appliance_vpcs") or []
     if not isinstance(raw_workloads, list) or not isinstance(raw_appliances, list):
         raise ValueError("Некорректный список VPC")
-    if len(raw_workloads) + len(raw_appliances) > MAX_K2_VPCS:
+    total_vpc_count = (
+        len(raw_workloads)
+        + len(raw_appliances)
+        + (1 if raw.get("include_transit_vpc") is True else 0)
+    )
+    if total_vpc_count > MAX_K2_VPCS:
         raise ValueError(f"Можно создать не более {MAX_K2_VPCS} VPC")
 
     requests: list[dict[str, Any]] = []
