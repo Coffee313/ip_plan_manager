@@ -10,6 +10,7 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request, send_file
 
+from address_plan_generator import generate_address_plan
 from backup import cleanup_old_backups, create_backup, run_daily_backup_if_due
 from ipplan_core import Workspace
 from project_store import (
@@ -18,6 +19,7 @@ from project_store import (
     ProjectNotFound,
     ProjectStore,
     UserAccessDenied,
+    data_fingerprint,
 )
 from restore_backup import list_project_backups, restore_project_backup
 
@@ -472,6 +474,105 @@ def create_app(
                 mimetype=mimetype,
                 as_attachment=True,
                 download_name=filename,
+            )
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/address-plan/preview")
+    def preview_address_plan():
+        try:
+            pid = project_id()
+            current_user()
+            authorize(pid)
+            generated = generate_address_plan(request.get_json(force=True))
+            current_state, _revision = store.state(pid)
+            for generated_site in generated["sites"]:
+                generated_network = ipaddress.ip_network(
+                    generated_site["cidr"], strict=False
+                )
+                for existing_site in current_state["sites"]:
+                    existing_network = ipaddress.ip_network(
+                        existing_site["cidr"], strict=False
+                    )
+                    if generated_network.overlaps(existing_network):
+                        raise ValueError(
+                            f"Суперсеть {generated_network} пересекается с существующей "
+                            f"площадкой «{existing_site['name']}» ({existing_network})"
+                        )
+            return ok(generated)
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/address-plan/apply")
+    def apply_address_plan():
+        try:
+            pid = project_id()
+            current_user()
+            authorize(pid)
+            generated = generate_address_plan(request.get_json(force=True))
+
+            def action(workspace):
+                site_ids = []
+                for site_plan in generated["sites"]:
+                    site = workspace.create_site(
+                        {"name": site_plan["name"], "cidr": site_plan["cidr"]},
+                        save=False,
+                    )
+                    site_ids.append(site["id"])
+                    for subnet in site_plan["subnets"]:
+                        workspace.create_subnet(
+                            {
+                                "parent_id": site["id"],
+                                "cidr": subnet["cidr"],
+                                "gateway": subnet["gateway"],
+                                "vrf": subnet["vrf"],
+                                "vlan_number": subnet["vlan_number"],
+                                "zone": subnet["zone"],
+                                "site": site_plan["name"],
+                                "description": subnet["description"],
+                            },
+                            save=False,
+                        )
+                workspace.save()
+                return {
+                    "site_ids": site_ids,
+                    "site_count": len(site_ids),
+                    "subnet_count": generated["total_subnets"],
+                }
+
+            return project_mutation(
+                action,
+                lambda workspace, result: {
+                    "action": "address_plan_generated",
+                    "description": (
+                        f"сгенерировал(а) адресный план: площадок "
+                        f"{result['site_count']}, подсетей {result['subnet_count']}"
+                    ),
+                    "target_type": "project",
+                    "target_id": pid,
+                    "anchor": "project-root",
+                    "undo": {
+                        "kind": "address_plan_generated",
+                        "target_id": pid,
+                        "sites": [
+                            {
+                                "id": site_id,
+                                "fingerprint": data_fingerprint(
+                                    workspace.find_site(site_id)
+                                ),
+                            }
+                            for site_id in result["site_ids"]
+                        ],
+                    },
+                },
             )
         except UserAccessDenied as exc:
             return fail(exc, 401)

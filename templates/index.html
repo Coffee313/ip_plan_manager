@@ -23,6 +23,7 @@
 
       <div class="toolbar-group plan-tools">
         <button id="addSiteBtn" class="btn secondary">+ Площадка</button>
+        <button id="generatePlanBtn" class="btn secondary" type="button">Сгенерировать план</button>
         <button id="undoBtn" class="btn secondary" type="button">Отменить</button>
         <button id="collapseAllBtn" class="btn secondary" type="button">Свернуть все</button>
         <input id="searchInput" class="search" placeholder="Поиск по IP, VLAN, описанию">
@@ -185,6 +186,35 @@
       <div class="modal-actions">
         <button type="button" class="btn secondary" data-close="siteDialog">Отмена</button>
         <button type="submit" class="btn primary">Создать</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="generatorDialog" class="modal generator-modal">
+    <form method="dialog" id="generatorForm">
+      <div class="modal-header">
+        <div>
+          <h2>Генератор адресного плана</h2>
+          <p>Задайте несколько площадок, суперсети и группы подсетей с разными масками.</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="generatorDialog" aria-label="Закрыть">×</button>
+      </div>
+
+      <div id="generatorSites" class="generator-sites"></div>
+      <button id="addGeneratorSiteBtn" class="btn secondary" type="button">+ Добавить площадку</button>
+
+      <section class="generator-preview-section">
+        <div class="generator-preview-heading">
+          <h3>Предпросмотр</h3>
+          <span id="generatorSummary">Сначала рассчитайте план</span>
+        </div>
+        <div id="generatorPreview" class="generator-preview"></div>
+      </section>
+
+      <div class="modal-actions">
+        <button type="button" class="btn secondary" data-close="generatorDialog">Отмена</button>
+        <button id="previewPlanBtn" type="button" class="btn secondary">Рассчитать</button>
+        <button id="applyPlanBtn" type="submit" class="btn primary" disabled>Создать план</button>
       </div>
     </form>
   </dialog>

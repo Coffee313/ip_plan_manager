@@ -303,6 +303,7 @@ function updateProjectControls() {
     : "";
   $("auditBtn").disabled = !currentUser;
   $("addSiteBtn").disabled = !hasAccess;
+  $("generatePlanBtn").disabled = !hasAccess;
   $("undoBtn").disabled = !hasAccess;
   $("collapseAllBtn").disabled = !hasAccess;
   $("backupsBtn").disabled = !hasAccess || !project?.can_delete;
@@ -1298,6 +1299,135 @@ function inheritedSite(parentId) {
   return "";
 }
 
+let generatorPreviewPayload = null;
+
+function generatorGroupMarkup(prefix = "24", count = "1") {
+  return `<div class="generator-group" data-generator-group>
+    <label>Маска<input data-generator-prefix required inputmode="numeric" value="${esc(prefix)}" placeholder="/24"></label>
+    <label>Количество<input data-generator-count required type="number" min="1" max="2000" value="${esc(count)}"></label>
+    <button class="icon-btn generator-remove" type="button" data-remove-generator-group aria-label="Удалить группу">×</button>
+  </div>`;
+}
+
+function generatorSiteMarkup(index) {
+  return `<section class="generator-site" data-generator-site>
+    <div class="generator-site-header">
+      <h3>Площадка <span data-generator-site-number>${index}</span></h3>
+      <button class="btn tiny danger" type="button" data-remove-generator-site>Удалить площадку</button>
+    </div>
+    <div class="generator-site-fields">
+      <label>Название *<input data-generator-name required value="Площадка ${index}" placeholder="Москва"></label>
+      <label>Суперсеть *<input data-generator-supernet required placeholder="10.10.0.0/16"></label>
+      <label>Шлюз
+        <select data-generator-gateway>
+          <option value="first">Первый доступный (.1)</option>
+          <option value="last">Последний доступный (.254 для /24)</option>
+          <option value="none">Не задавать</option>
+        </select>
+      </label>
+      <label>Начальный VLAN<input data-generator-vlan type="number" min="1" max="4094" placeholder="100"></label>
+      <label>VRF<input data-generator-vrf placeholder="CORP"></label>
+      <label>Зона<input data-generator-zone placeholder="LAN"></label>
+      <label class="generator-wide">Префикс описания<input data-generator-description placeholder="MOS"></label>
+    </div>
+    <div class="generator-groups">
+      <div class="generator-groups-heading"><strong>Группы подсетей</strong><span>Крупные сети размещаются первыми автоматически</span></div>
+      <div data-generator-groups>${generatorGroupMarkup()}</div>
+      <button class="btn tiny secondary" type="button" data-add-generator-group>+ Добавить маску</button>
+    </div>
+  </section>`;
+}
+
+function renumberGeneratorSites() {
+  $("generatorSites").querySelectorAll("[data-generator-site]").forEach((site, index) => {
+    site.querySelector("[data-generator-site-number]").textContent = String(index + 1);
+  });
+}
+
+function invalidateGeneratorPreview() {
+  generatorPreviewPayload = null;
+  $("applyPlanBtn").disabled = true;
+  $("generatorSummary").textContent = "Параметры изменены — выполните расчет заново";
+}
+
+function addGeneratorSite() {
+  const index = $("generatorSites").querySelectorAll("[data-generator-site]").length + 1;
+  $("generatorSites").insertAdjacentHTML("beforeend", generatorSiteMarkup(index));
+  invalidateGeneratorPreview();
+}
+
+function generatorPayload() {
+  return {
+    sites: [...$("generatorSites").querySelectorAll("[data-generator-site]")].map(site => ({
+      name: site.querySelector("[data-generator-name]").value.trim(),
+      supernet: site.querySelector("[data-generator-supernet]").value.trim(),
+      gateway_mode: site.querySelector("[data-generator-gateway]").value,
+      vlan_start: site.querySelector("[data-generator-vlan]").value.trim(),
+      vrf: site.querySelector("[data-generator-vrf]").value.trim(),
+      zone: site.querySelector("[data-generator-zone]").value.trim(),
+      description_prefix: site.querySelector("[data-generator-description]").value.trim(),
+      groups: [...site.querySelectorAll("[data-generator-group]")].map(group => ({
+        prefix: group.querySelector("[data-generator-prefix]").value.trim(),
+        count: group.querySelector("[data-generator-count]").value
+      }))
+    }))
+  };
+}
+
+function renderGeneratorPreview(preview) {
+  $("generatorSummary").textContent = `Площадок: ${preview.sites.length} · Подсетей: ${preview.total_subnets}`;
+  $("generatorPreview").innerHTML = preview.sites.map(site => {
+    const visible = site.subnets.slice(0, 100);
+    const rows = visible.map(subnet => `<tr>
+      <td class="mono">${esc(subnet.cidr)}</td><td class="mono">${esc(subnet.gateway || "—")}</td>
+      <td>${esc(subnet.vlan_number ?? "—")}</td><td>${esc(subnet.description)}</td>
+    </tr>`).join("");
+    const remainder = site.subnets.length - visible.length;
+    return `<article class="generator-preview-site">
+      <div><strong>${esc(site.name)}</strong><span class="mono">${esc(site.cidr)}</span><small>Свободно адресов: ${esc(site.free_addresses)}</small></div>
+      <div class="generator-preview-table"><table><thead><tr><th>CIDR</th><th>Шлюз</th><th>VLAN</th><th>Описание</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${remainder > 0 ? `<small>Еще подсетей: ${remainder}</small>` : ""}
+    </article>`;
+  }).join("");
+}
+
+function openGeneratorDialog() {
+  $("generatorSites").innerHTML = "";
+  $("generatorPreview").innerHTML = "";
+  $("generatorSummary").textContent = "Сначала рассчитайте план";
+  addGeneratorSite();
+  generatorPreviewPayload = null;
+  $("applyPlanBtn").disabled = true;
+  $("generatorDialog").showModal();
+}
+
+async function previewGeneratedPlan() {
+  if (!$("generatorForm").reportValidity()) return;
+  try {
+    const payload = generatorPayload();
+    const preview = await api("/api/address-plan/preview", {
+      method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
+    });
+    generatorPreviewPayload = payload;
+    renderGeneratorPreview(preview);
+    $("applyPlanBtn").disabled = false;
+  } catch (error) { toast(error.message, true); }
+}
+
+async function applyGeneratedPlan(event) {
+  event.preventDefault();
+  if (!generatorPreviewPayload) return;
+  try {
+    const result = await api("/api/address-plan/apply", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(generatorPreviewPayload)
+    });
+    $("generatorDialog").close();
+    toast(`Создано площадок: ${result.site_count}, подсетей: ${result.subnet_count}`);
+    await refresh();
+  } catch (error) { toast(error.message, true); }
+}
+
 function openSiteCreate() {
   $("siteName").value = "";
   $("siteCIDR").value = "";
@@ -1839,6 +1969,44 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
 
   $("addSiteBtn").onclick = openSiteCreate;
+  $("generatePlanBtn").onclick = openGeneratorDialog;
+  $("addGeneratorSiteBtn").onclick = addGeneratorSite;
+  $("previewPlanBtn").onclick = previewGeneratedPlan;
+  $("generatorForm").onsubmit = applyGeneratedPlan;
+  $("generatorSites").addEventListener("input", invalidateGeneratorPreview);
+  $("generatorSites").addEventListener("change", invalidateGeneratorPreview);
+  $("generatorSites").addEventListener("click", event => {
+    const site = event.target.closest("[data-generator-site]");
+    if (!site) return;
+    if (event.target.closest("[data-add-generator-group]")) {
+      site.querySelector("[data-generator-groups]").insertAdjacentHTML(
+        "beforeend", generatorGroupMarkup()
+      );
+      invalidateGeneratorPreview();
+      return;
+    }
+    const removeGroup = event.target.closest("[data-remove-generator-group]");
+    if (removeGroup) {
+      const groups = site.querySelectorAll("[data-generator-group]");
+      if (groups.length === 1) {
+        toast("У площадки должна остаться хотя бы одна группа масок", true);
+        return;
+      }
+      removeGroup.closest("[data-generator-group]").remove();
+      invalidateGeneratorPreview();
+      return;
+    }
+    if (event.target.closest("[data-remove-generator-site]")) {
+      const sites = $("generatorSites").querySelectorAll("[data-generator-site]");
+      if (sites.length === 1) {
+        toast("Должна остаться хотя бы одна площадка", true);
+        return;
+      }
+      site.remove();
+      renumberGeneratorSites();
+      invalidateGeneratorPreview();
+    }
+  });
 
   $("fileInput").onchange = e => {
     closeHeaderMenu();

@@ -489,7 +489,9 @@ class Workspace:
             if new_net.overlaps(old_net):
                 raise ValueError(f"Сеть площадки пересекается с {site['name']}: {old_net}")
 
-    def create_site(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_site(
+        self, payload: dict[str, Any], *, save: bool = True
+    ) -> dict[str, Any]:
         name = text(payload.get("name")).strip()
         if not name:
             raise ValueError("Укажите название площадки")
@@ -510,7 +512,8 @@ class Workspace:
         }
         self.sites.append(site)
         self.sites.sort(key=lambda s: (int(parse_network(s["cidr"]).network_address), parse_network(s["cidr"]).prefixlen))
-        self.save()
+        if save:
+            self.save()
         return {"id": site["id"]}
 
     def update_site(self, site_id: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -558,7 +561,9 @@ class Workspace:
         return {"subnets": subnet_count, "hosts": host_count}
 
     # ---------- mutations ----------
-    def create_subnet(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def create_subnet(
+        self, payload: dict[str, Any], *, save: bool = True
+    ) -> dict[str, Any]:
         parent_id = payload.get("parent_id", "")
         site, parent_net = self.find_parent_network(parent_id)
         new_net = parse_network(payload.get("cidr", ""))
@@ -593,7 +598,8 @@ class Workspace:
             "hosts": [],
         }
         site["subnets"].append(subnet)
-        self.save()
+        if save:
+            self.save()
 
         actual_parent = self.subnet_parent_id(site, subnet)
         return {"id": subnet["id"], "actual_parent_id": actual_parent}

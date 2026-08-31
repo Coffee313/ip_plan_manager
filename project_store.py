@@ -107,6 +107,13 @@ def token_hash(token: str) -> str:
     return hashlib.sha256(str(token or "").encode("utf-8")).hexdigest()
 
 
+def data_fingerprint(value: Any) -> str:
+    serialized = json.dumps(
+        value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
 class ProjectStore:
     def __init__(self, data_root: str | Path | None = None) -> None:
         configured = data_root or os.environ.get("IP_PLAN_DATA_DIR")
@@ -723,6 +730,23 @@ class ProjectStore:
         kind, target_id = undo["kind"], undo["target_id"]
 
         def action(workspace: Workspace) -> dict[str, Any]:
+            if kind == "address_plan_generated":
+                generated_sites = undo.get("sites")
+                if not isinstance(generated_sites, list) or not generated_sites:
+                    raise ValueError("Некорректные данные отмены генерации")
+                for generated_site in generated_sites:
+                    site = workspace.find_site(generated_site["id"])
+                    if data_fingerprint(site) != generated_site["fingerprint"]:
+                        raise ValueError(
+                            "Сгенерированный план изменен позже; отмена затронула бы "
+                            "изменения коллеги"
+                        )
+                generated_ids = {site["id"] for site in generated_sites}
+                workspace.sites = [
+                    site for site in workspace.sites if site["id"] not in generated_ids
+                ]
+                workspace.save()
+                return {"event_id": original["id"], "target_id": target_id}
             if kind.endswith("_deleted"):
                 self._apply_undo_values(workspace, kind, target_id, undo)
             else:
