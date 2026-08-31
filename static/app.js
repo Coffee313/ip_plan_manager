@@ -1840,6 +1840,23 @@ async function undoOwnChange() {
   } catch (error) { toast(error.message, true); }
 }
 
+function isEditableUndoTarget(target) {
+  return target instanceof Element && !!target.closest(
+    "input, textarea, select, [contenteditable='true']"
+  );
+}
+
+function handleUndoHotkey(event) {
+  if (
+    !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey || event.repeat ||
+    event.key.toLowerCase() !== "z"
+  ) return;
+  if (isEditableUndoTarget(event.target) || document.querySelector("dialog[open]")) return;
+  if ($("undoBtn").disabled) return;
+  event.preventDefault();
+  undoOwnChange();
+}
+
 function renderBackups(backups) {
   const list = $("backupsList");
   if (!backups.length) {
@@ -2031,6 +2048,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   document.addEventListener("keydown", event => {
     if (event.key === "Escape") closeHeaderMenu();
   });
+  document.addEventListener("keydown", handleUndoHotkey);
 
   $("searchInput").oninput = applySearch;
   $("siteForm").onsubmit = createSite;

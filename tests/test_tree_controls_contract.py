@@ -59,3 +59,30 @@ def test_audit_renderer_displays_before_and_after_values():
     assert 'beforeLabel.textContent = "До"' in javascript
     assert 'afterLabel.textContent = "После"' in javascript
     assert ".audit-change" in css
+
+
+def test_undo_is_a_prominent_corner_action_with_safe_ctrl_z_hotkey():
+    html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "static/style.css").read_text(encoding="utf-8")
+
+    assert 'id="undoBtn" class="undo-fab"' in html
+    assert "Ctrl+Z" in html
+    assert html.index('id="undoBtn"') > html.index('<div class="app-layout">')
+    assert ".undo-fab" in css
+    assert "position: fixed" in css
+    assert "right: 18px" in css and "bottom: 18px" in css
+    assert "function handleUndoHotkey(event)" in javascript
+    assert 'event.key.toLowerCase() !== "z"' in javascript
+    assert "isEditableUndoTarget(event.target)" in javascript
+    assert 'document.querySelector("dialog[open]")' in javascript
+    assert "event.repeat" in javascript
+
+
+def test_application_has_an_svg_favicon():
+    html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
+    favicon = ROOT / "static/favicon.svg"
+
+    assert '<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">' in html
+    assert favicon.exists()
+    assert "<svg" in favicon.read_text(encoding="utf-8")

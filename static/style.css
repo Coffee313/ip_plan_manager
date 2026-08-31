@@ -344,6 +344,37 @@ body {
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { background: #7a271a; }
 
+.undo-fab {
+  position: fixed;
+  right: 18px;
+  bottom: 18px;
+  z-index: 45;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+  padding: 9px 13px;
+  border: 1px solid #8f3d00;
+  border-radius: 12px;
+  background: #b54708;
+  color: #fff;
+  box-shadow: 0 8px 24px rgba(181, 71, 8, .32);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.undo-fab:hover:not(:disabled) { background: #93370d; transform: translateY(-1px); }
+.undo-fab:focus-visible { outline: 3px solid rgba(245, 158, 11, .4); outline-offset: 2px; }
+.undo-fab:disabled { opacity: .42; box-shadow: none; cursor: not-allowed; }
+.undo-fab-icon { font-size: 21px; line-height: 1; }
+.undo-fab kbd {
+  padding: 2px 5px;
+  border: 1px solid rgba(255, 255, 255, .45);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, .14);
+  font: 600 10px/1.2 Consolas, "Courier New", monospace;
+}
+
 .generator-modal { width: min(1120px, calc(100vw - 30px)); }
 .generator-modal form { max-width: 100%; overflow-x: hidden; }
 .generator-sites { display: grid; gap: 14px; margin-bottom: 12px; }
@@ -450,6 +481,8 @@ body {
   .generator-preview-heading { align-items: flex-start; flex-direction: column; gap: 4px; }
   .generator-modal .modal-actions { flex-wrap: wrap; }
   .generator-modal .modal-actions .btn { flex: 1 1 130px; }
+  .undo-fab { right: 12px; bottom: 12px; min-height: 42px; padding: 8px 11px; }
+  .undo-fab kbd { display: none; }
 }
 
 .btn.disabled,
