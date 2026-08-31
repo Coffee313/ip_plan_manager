@@ -191,6 +191,59 @@ def test_user_can_undo_own_deletion_of_colleague_host_and_subnet(tmp_path):
     assert restored["hosts"][0]["id"] == host_id
 
 
+def test_deleted_subnet_can_be_restored_beside_same_addresses_in_other_vrf(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]
+    pid = created["project"]["id"]
+    token = created["access_token"]
+    site = client.post(
+        "/api/sites", json={"name": "Площадка", "cidr": "10.0.0.0/16"},
+        headers=project_headers(owner, pid, token, 0),
+    ).get_json()
+    blue = client.post(
+        "/api/subnets",
+        json={"parent_id": site["data"]["id"], "cidr": "10.0.1.0/24", "vrf": "BLUE"},
+        headers=project_headers(owner, pid, token, site["revision"]),
+    ).get_json()
+    blue_host = client.post(
+        f"/api/subnets/{blue['data']['id']}/hosts",
+        json={"ip": "10.0.1.10", "name": "blue"},
+        headers=project_headers(owner, pid, token, blue["revision"]),
+    ).get_json()
+    red = client.post(
+        "/api/subnets",
+        json={"parent_id": site["data"]["id"], "cidr": "10.0.1.0/24", "vrf": "RED"},
+        headers=project_headers(owner, pid, token, blue_host["revision"]),
+    ).get_json()
+    red_host = client.post(
+        f"/api/subnets/{red['data']['id']}/hosts",
+        json={"ip": "10.0.1.10", "name": "red"},
+        headers=project_headers(owner, pid, token, red["revision"]),
+    ).get_json()
+    deleted = client.delete(
+        f"/api/subnets/{blue['data']['id']}",
+        headers=project_headers(owner, pid, token, red_host["revision"]),
+    ).get_json()
+
+    restored = client.post(
+        "/api/undo",
+        headers=project_headers(owner, pid, token, deleted["revision"]),
+    )
+
+    assert restored.status_code == 200, restored.get_json()
+    state, _ = store.state(pid)
+    tree = state["sites"][0]["tree"]
+    assert [(node["vrf"], node["hosts"][0]["ip"]) for node in tree] == [
+        ("BLUE", "10.0.1.10"),
+        ("RED", "10.0.1.10"),
+    ]
+
+
 def test_owner_can_undo_selected_colleague_change(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()

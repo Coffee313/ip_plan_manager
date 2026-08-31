@@ -12,7 +12,7 @@ from flask import Flask, jsonify, render_template, request, send_file
 
 from address_plan_generator import generate_address_plan
 from backup import cleanup_old_backups, create_backup, run_daily_backup_if_due
-from ipplan_core import Workspace
+from ipplan_core import Workspace, subnet_vrf
 from project_store import (
     ProjectAccessDenied,
     ProjectConflict,
@@ -765,8 +765,10 @@ def create_app(
             deleted["before"] = subnet_values(subnet)
             deleted["site_id"] = site["id"]
             target = ipaddress.ip_network(subnet["cidr"], strict=False)
+            target_vrf = subnet_vrf(subnet)
             deleted["snapshots"] = deepcopy([
                 item for item in site["subnets"]
+                if subnet_vrf(item) == target_vrf
                 if ipaddress.ip_network(item["cidr"], strict=False).subnet_of(target)
             ])
             parent_id = workspace.subnet_parent_id(site, subnet)

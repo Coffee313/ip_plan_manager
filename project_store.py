@@ -17,7 +17,7 @@ from typing import Any
 
 from filelock import FileLock
 
-from ipplan_core import Workspace
+from ipplan_core import Workspace, subnet_vrf
 
 
 def utc_now() -> str:
@@ -627,8 +627,10 @@ class ProjectStore:
         if kind == "subnet_created":
             site, subnet = workspace.find_subnet(target_id)
             target_network = ipaddress.ip_network(subnet["cidr"], strict=False)
+            target_vrf = subnet_vrf(subnet)
             has_children = any(
                 other["id"] != target_id
+                and subnet_vrf(other) == target_vrf
                 and ipaddress.ip_network(other["cidr"], strict=False).subnet_of(target_network)
                 for other in site.get("subnets", [])
             )
@@ -641,9 +643,13 @@ class ProjectStore:
             site, subnet = workspace.find_subnet(values["subnet_id"])
             snapshot = deepcopy(values["snapshot"])
             restored_ip = ipaddress.ip_address(snapshot["values"][0])
-            if workspace.most_specific_subnet_for_ip(site, restored_ip)["id"] != subnet["id"]:
+            target_vrf = subnet_vrf(subnet)
+            best = workspace.most_specific_subnet_for_ip(site, restored_ip, target_vrf)
+            if best is None or best["id"] != subnet["id"]:
                 raise ValueError("Структура подсетей изменена позже; хост нельзя безопасно восстановить")
             for current_subnet in site["subnets"]:
+                if subnet_vrf(current_subnet) != target_vrf:
+                    continue
                 for host in current_subnet.get("hosts", []):
                     if host["id"] == target_id or str(host["values"][0]) == str(restored_ip):
                         raise ValueError("IP хоста уже используется; восстановление отменено")
@@ -660,24 +666,31 @@ class ProjectStore:
                 raise ValueError("Одна из удаленных подсетей уже существует")
             for subnet in snapshots:
                 workspace.validate_subnet_network(
-                    site, ipaddress.ip_network(subnet["cidr"], strict=False)
+                    site,
+                    ipaddress.ip_network(subnet["cidr"], strict=False),
+                    subnet_vrf(subnet),
                 )
 
             existing_host_ids = {
                 host["id"] for subnet in site["subnets"] for host in subnet.get("hosts", [])
             }
             existing_ips = {
-                str(host["values"][0])
+                (subnet_vrf(subnet), str(host["values"][0]))
                 for subnet in site["subnets"] for host in subnet.get("hosts", [])
             }
             prospective = site["subnets"] + snapshots
             for subnet in snapshots:
+                target_vrf = subnet_vrf(subnet)
                 for host in subnet.get("hosts", []):
                     host_ip = ipaddress.ip_address(host["values"][0])
-                    if host["id"] in existing_host_ids or str(host_ip) in existing_ips:
+                    if (
+                        host["id"] in existing_host_ids
+                        or (target_vrf, str(host_ip)) in existing_ips
+                    ):
                         raise ValueError("Данные хоста уже используются; восстановление отменено")
                     matching = [
                         candidate for candidate in prospective
+                        if subnet_vrf(candidate) == target_vrf
                         if host_ip in ipaddress.ip_network(candidate["cidr"], strict=False)
                     ]
                     best = max(
@@ -691,6 +704,7 @@ class ProjectStore:
                 key=lambda subnet: (
                     int(ipaddress.ip_network(subnet["cidr"], strict=False).network_address),
                     ipaddress.ip_network(subnet["cidr"], strict=False).prefixlen,
+                    subnet_vrf(subnet),
                 )
             )
             workspace.save()

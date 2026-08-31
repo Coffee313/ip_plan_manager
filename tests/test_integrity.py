@@ -89,3 +89,55 @@ def test_expanding_subnet_makes_it_supernet_without_changing_neighbor(tmp_path):
     assert second_subnet["cidr"] == "10.0.1.0/24"
     assert workspace.subnet_parent_id(workspace.sites[0], first_subnet) == container["id"]
     assert workspace.subnet_parent_id(workspace.sites[0], second_subnet) == first["id"]
+
+
+def test_same_subnet_and_host_addresses_are_isolated_by_vrf(tmp_path):
+    workspace = Workspace(tmp_path)
+    site = workspace.create_site({"name": "Площадка", "cidr": "10.0.0.0/16"})
+    blue = workspace.create_subnet({
+        "parent_id": site["id"], "cidr": "10.0.1.0/24", "vrf": "BLUE",
+    })
+    red = workspace.create_subnet({
+        "parent_id": site["id"], "cidr": "10.0.1.0/24", "vrf": "RED",
+    })
+
+    workspace.create_host(blue["id"], {"ip": "10.0.1.10", "name": "blue-srv"})
+    workspace.create_host(red["id"], {"ip": "10.0.1.10", "name": "red-srv"})
+
+    tree = workspace.state_json()["sites"][0]["tree"]
+    assert [(node["cidr"], node["vrf"]) for node in tree] == [
+        ("10.0.1.0/24", "BLUE"),
+        ("10.0.1.0/24", "RED"),
+    ]
+    assert [node["hosts"][0]["name"] for node in tree] == ["blue-srv", "red-srv"]
+
+
+def test_vrf_scopes_duplicate_validation_and_subnet_deletion(tmp_path):
+    workspace = Workspace(tmp_path)
+    site = workspace.create_site({"name": "Площадка", "cidr": "10.0.0.0/16"})
+    blue = workspace.create_subnet({
+        "parent_id": site["id"], "cidr": "10.0.0.0/20", "vrf": "BLUE",
+    })
+    workspace.create_subnet({
+        "parent_id": blue["id"], "cidr": "10.0.1.0/24", "vrf": "BLUE",
+    })
+    red = workspace.create_subnet({
+        "parent_id": site["id"], "cidr": "10.0.0.0/20", "vrf": "RED",
+    })
+    red_child = workspace.create_subnet({
+        "parent_id": red["id"], "cidr": "10.0.1.0/24", "vrf": "RED",
+    })
+
+    with pytest.raises(ValueError, match="уже существует"):
+        workspace.create_subnet({
+            "parent_id": site["id"], "cidr": "10.0.0.0/20", "vrf": "RED",
+        })
+    with pytest.raises(ValueError, match="уже существует"):
+        workspace.update_subnet(blue["id"], {
+            "cidr": "10.0.0.0/20", "vrf": "RED",
+        })
+
+    workspace.delete_subnet(blue["id"])
+
+    remaining_ids = {subnet["id"] for subnet in workspace.sites[0]["subnets"]}
+    assert remaining_ids == {red["id"], red_child["id"]}

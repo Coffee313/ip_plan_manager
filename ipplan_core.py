@@ -41,6 +41,14 @@ def normalize_row(values: list[Any]) -> list[Any]:
     return values
 
 
+def vrf_name(value: Any) -> str:
+    return text(value).strip()
+
+
+def subnet_vrf(subnet: dict[str, Any]) -> str:
+    return vrf_name(normalize_row(subnet.get("values") or [])[2])
+
+
 def parse_network(value: str) -> ipaddress.IPv4Network:
     try:
         network = ipaddress.ip_network(value.strip(), strict=False)
@@ -346,9 +354,12 @@ class Workspace:
     # ---------- hierarchy ----------
     def subnet_parent_id(self, site: dict[str, Any], subnet: dict[str, Any]) -> str:
         target = parse_network(subnet["cidr"])
+        target_vrf = subnet_vrf(subnet)
         candidates: list[tuple[int, str]] = []
         for other in site["subnets"]:
             if other["id"] == subnet["id"]:
+                continue
+            if subnet_vrf(other) != target_vrf:
                 continue
             net = parse_network(other["cidr"])
             if target.subnet_of(net) and target != net:
@@ -361,24 +372,26 @@ class Workspace:
     def tree_for_site(self, site: dict[str, Any]) -> list[dict[str, Any]]:
         children: dict[str, list[dict[str, Any]]] = {}
         site_net = parse_network(site["cidr"])
-        subnet_by_network = {
-            parse_network(subnet["cidr"]): subnet for subnet in site["subnets"]
+        subnet_by_network_and_vrf = {
+            (parse_network(subnet["cidr"]), subnet_vrf(subnet)): subnet
+            for subnet in site["subnets"]
         }
         for subnet in site["subnets"]:
             target = parse_network(subnet["cidr"])
+            target_vrf = subnet_vrf(subnet)
             parent_id = site["id"]
             candidate = target
             while candidate.prefixlen > site_net.prefixlen + 1:
                 candidate = candidate.supernet()
-                parent = subnet_by_network.get(candidate)
+                parent = subnet_by_network_and_vrf.get((candidate, target_vrf))
                 if parent is not None:
                     parent_id = parent["id"]
                     break
             children.setdefault(parent_id, []).append(subnet)
 
-        def key(node: dict[str, Any]) -> tuple[int, int]:
+        def key(node: dict[str, Any]) -> tuple[int, int, str]:
             n = parse_network(node["cidr"])
-            return int(n.network_address), n.prefixlen
+            return int(n.network_address), n.prefixlen, subnet_vrf(node)
 
         def build(parent_id: str, depth: int = 0) -> list[dict[str, Any]]:
             nodes = []
@@ -444,6 +457,7 @@ class Workspace:
         self,
         site: dict[str, Any],
         new_net: ipaddress.IPv4Network,
+        new_vrf: str = "",
         exclude_id: str | None = None,
     ) -> None:
         site_net = parse_network(site["cidr"])
@@ -452,6 +466,8 @@ class Workspace:
 
         for other in site["subnets"]:
             if other["id"] == exclude_id:
+                continue
+            if subnet_vrf(other) != new_vrf:
                 continue
             old = parse_network(other["cidr"])
             if new_net == old:
@@ -466,9 +482,12 @@ class Workspace:
         self,
         site: dict[str, Any],
         ip: ipaddress.IPv4Address,
+        vrf: str,
     ) -> dict[str, Any] | None:
         matches = []
         for subnet in site["subnets"]:
+            if subnet_vrf(subnet) != vrf:
+                continue
             net = parse_network(subnet["cidr"])
             if ip in net:
                 matches.append((net.prefixlen, subnet))
@@ -567,16 +586,17 @@ class Workspace:
         parent_id = payload.get("parent_id", "")
         site, parent_net = self.find_parent_network(parent_id)
         new_net = parse_network(payload.get("cidr", ""))
+        new_vrf = vrf_name(payload.get("vrf"))
 
         if new_net == parent_net or not new_net.subnet_of(parent_net):
             raise ValueError(f"Новая подсеть должна находиться внутри выбранной сети {parent_net}")
 
-        self.validate_subnet_network(site, new_net)
+        self.validate_subnet_network(site, new_net, new_vrf)
 
         values = [None] * 17
         values[0] = str(new_net)
         values[1] = payload.get("gateway") or None
-        values[2] = payload.get("vrf") or None
+        values[2] = new_vrf or None
         vlan = payload.get("vlan_number")
         values[3] = int(vlan) if vlan not in (None, "") and str(vlan).strip() else None
         values[4] = payload.get("vlan_name") or None
@@ -608,6 +628,7 @@ class Workspace:
         site, subnet = self.find_subnet(subnet_id)
         old_net = parse_network(subnet["cidr"])
         old_vals = normalize_row(subnet["values"])
+        new_vrf = vrf_name(payload.get("vrf", old_vals[2]))
 
         changed_field = text(payload.get("_changed_field")).strip()
         requested_net = parse_network(payload.get("cidr", subnet["cidr"]))
@@ -640,7 +661,9 @@ class Workspace:
                 # Clearing Gateway leaves CIDR unchanged.
                 new_net = old_net
 
-        self.validate_subnet_network(site, new_net, exclude_id=subnet_id)
+        self.validate_subnet_network(
+            site, new_net, new_vrf, exclude_id=subnet_id
+        )
 
         # Hosts explicitly attached to this subnet inherit the new subnet
         # address automatically. Preserve each host's numeric offset from the
@@ -685,6 +708,8 @@ class Workspace:
             for other in site["subnets"]:
                 if other["id"] == subnet_id:
                     continue
+                if subnet_vrf(other) != new_vrf:
+                    continue
                 other_net = parse_network(other["cidr"])
                 if new_ip in other_net and other_net.prefixlen > new_net.prefixlen:
                     raise ValueError(
@@ -694,6 +719,8 @@ class Workspace:
 
             # Check for collisions with hosts outside the edited subnet.
             for other_subnet in site["subnets"]:
+                if subnet_vrf(other_subnet) != new_vrf:
+                    continue
                 for other_host in other_subnet.get("hosts", []):
                     if other_host["id"] in moved_host_ids:
                         continue
@@ -712,7 +739,7 @@ class Workspace:
         vals = normalize_row(subnet["values"])
         vals[0] = str(new_net)
         vals[1] = str(gateway) if gateway is not None else None
-        vals[2] = payload.get("vrf") or None
+        vals[2] = new_vrf or None
         vlan = payload.get("vlan_number")
         vals[3] = int(vlan) if vlan not in (None, "") and str(vlan).strip() else None
         vals[4] = payload.get("vlan_name") or None
@@ -750,10 +777,13 @@ class Workspace:
     def delete_subnet(self, subnet_id: str) -> dict[str, int]:
         site, subnet = self.find_subnet(subnet_id)
         target = parse_network(subnet["cidr"])
+        target_vrf = subnet_vrf(subnet)
 
         to_delete = []
         host_count = 0
         for other in site["subnets"]:
+            if subnet_vrf(other) != target_vrf:
+                continue
             net = parse_network(other["cidr"])
             if net.subnet_of(target):
                 to_delete.append(other["id"])
@@ -766,6 +796,7 @@ class Workspace:
     def create_host(self, subnet_id: str, payload: dict[str, Any]) -> str:
         site, subnet = self.find_subnet(subnet_id)
         net = parse_network(subnet["cidr"])
+        target_vrf = subnet_vrf(subnet)
         ip = parse_ip(payload.get("ip", ""))
 
         if ip not in net:
@@ -773,7 +804,7 @@ class Workspace:
         if net.prefixlen <= 30 and ip in {net.network_address, net.broadcast_address}:
             raise ValueError("Нельзя использовать адрес сети или broadcast")
 
-        best = self.most_specific_subnet_for_ip(site, ip)
+        best = self.most_specific_subnet_for_ip(site, ip, target_vrf)
         if best and best["id"] != subnet_id:
             raise ValueError(
                 f"Адрес {ip} относится к более специфичной подсети {best['cidr']}. "
@@ -781,6 +812,8 @@ class Workspace:
             )
 
         for s in site["subnets"]:
+            if subnet_vrf(s) != target_vrf:
+                continue
             for h in s.get("hosts", []):
                 if text(h["values"][0]).strip() == str(ip):
                     raise ValueError(f"IP {ip} уже используется")
@@ -810,6 +843,7 @@ class Workspace:
     def update_host(self, host_id: str, payload: dict[str, Any]) -> None:
         site, subnet, host = self.find_host(host_id)
         net = parse_network(subnet["cidr"])
+        target_vrf = subnet_vrf(subnet)
         ip = parse_ip(payload.get("ip", ""))
 
         if ip not in net:
@@ -817,11 +851,13 @@ class Workspace:
         if net.prefixlen <= 30 and ip in {net.network_address, net.broadcast_address}:
             raise ValueError("Нельзя использовать адрес сети или broadcast")
 
-        best = self.most_specific_subnet_for_ip(site, ip)
+        best = self.most_specific_subnet_for_ip(site, ip, target_vrf)
         if best and best["id"] != subnet["id"]:
             raise ValueError(f"Адрес относится к более специфичной подсети {best['cidr']}")
 
         for s in site["subnets"]:
+            if subnet_vrf(s) != target_vrf:
+                continue
             for h in s.get("hosts", []):
                 if h["id"] != host_id and text(h["values"][0]).strip() == str(ip):
                     raise ValueError(f"IP {ip} уже используется")
