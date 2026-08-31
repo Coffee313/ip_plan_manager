@@ -68,12 +68,14 @@ def test_undo_is_a_prominent_corner_action_with_safe_ctrl_z_hotkey():
 
     assert 'id="undoBtn" class="undo-fab"' in html
     assert "Ctrl+Z" in html
+    assert "Ctrl+Я" in html
     assert html.index('id="undoBtn"') > html.index('<div class="app-layout">')
     assert ".undo-fab" in css
     assert "position: fixed" in css
     assert "right: 18px" in css and "bottom: 18px" in css
     assert "function handleUndoHotkey(event)" in javascript
-    assert 'event.key.toLowerCase() !== "z"' in javascript
+    assert 'event.code === "KeyZ"' in javascript
+    assert '["z", "я"].includes(event.key.toLowerCase())' in javascript
     assert "isEditableUndoTarget(event.target)" in javascript
     assert 'document.querySelector("dialog[open]")' in javascript
     assert "event.repeat" in javascript

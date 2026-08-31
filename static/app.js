@@ -1847,9 +1847,10 @@ function isEditableUndoTarget(target) {
 }
 
 function handleUndoHotkey(event) {
+  const isUndoKey = event.code === "KeyZ" || ["z", "я"].includes(event.key.toLowerCase());
   if (
     !event.ctrlKey || event.altKey || event.shiftKey || event.metaKey || event.repeat ||
-    event.key.toLowerCase() !== "z"
+    !isUndoKey
   ) return;
   if (isEditableUndoTarget(event.target) || document.querySelector("dialog[open]")) return;
   if ($("undoBtn").disabled) return;
