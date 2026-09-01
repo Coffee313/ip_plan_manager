@@ -194,31 +194,62 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
             scoped_zones = [zones[index] for index in zone_indices]
         else:
             zone_scope = str(raw_vpc.get("zone_scope") or "all").strip()
-            scoped_zones = {
-                "all": zones,
-                "primary": zones[:1],
-                "secondary": zones[1:2],
-                "tertiary": zones[2:3] if len(zones) == 3 else None,
+            zone_indices = {
+                "all": list(range(len(zones))),
+                "primary": [0],
+                "secondary": [1] if len(zones) >= 2 else [],
+                "tertiary": [2] if len(zones) == 3 else [],
             }.get(zone_scope)
-        if not scoped_zones:
+            scoped_zones = (
+                [zones[index] for index in zone_indices]
+                if zone_indices is not None
+                else None
+            )
+        if zone_indices is None or not scoped_zones:
             raise ValueError("Некорректный выбор зон для VPC сетевых устройств")
         label = _K2_APPLIANCE_LABELS[appliance_type]
         cluster = raw_vpc.get("cluster") is True
+        raw_interlink_indices = raw_vpc.get("interlink_zone_indices")
+        if not cluster:
+            interlink_zone_indices: list[int] = []
+        elif raw_interlink_indices is None:
+            interlink_zone_indices = list(zone_indices)
+        else:
+            if not isinstance(raw_interlink_indices, list) or any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in raw_interlink_indices
+            ):
+                raise ValueError("Некорректный выбор зон interlink")
+            interlink_zone_indices = sorted(raw_interlink_indices)
+            if (
+                len(set(interlink_zone_indices)) != len(interlink_zone_indices)
+                or any(index not in zone_indices for index in interlink_zone_indices)
+            ):
+                raise ValueError("Зоны interlink должны входить в зоны сетевого устройства")
         default_outside_prefix = 25 if appliance_type == "firewall" else 28
-        roles = [
+        common_roles = [
             (f"{label} outside", _k2_prefix(
                 raw_vpc.get("outside_prefix"), default_outside_prefix
             )),
             (f"{label} inside", _k2_prefix(raw_vpc.get("inside_prefix"), 28)),
         ]
-        if cluster:
-            roles.append((
-                f"{label} interlink", _k2_prefix(raw_vpc.get("interlink_prefix"), 28)
-            ))
-        roles.append((
+        tgw_role = (
             "транзитная подсеть к TGW", _k2_prefix(raw_vpc.get("tgw_prefix"), 28)
-        ))
-        layout, zone_size = _k2_zone_layout(roles, minimum_size=256)
+        )
+        layout_without_interlink, zone_size_without = _k2_zone_layout(
+            [*common_roles, tgw_role], minimum_size=256
+        )
+        if interlink_zone_indices:
+            interlink_role = (
+                f"{label} interlink", _k2_prefix(raw_vpc.get("interlink_prefix"), 28)
+            )
+            layout_with_interlink, zone_size_with = _k2_zone_layout(
+                [*common_roles, interlink_role, tgw_role], minimum_size=256
+            )
+        else:
+            layout_with_interlink = layout_without_interlink
+            zone_size_with = zone_size_without
+        zone_size = max(zone_size_without, zone_size_with)
         if appliance_type == "ravpn":
             user_prefix = _k2_prefix(raw_vpc.get("user_prefix"), 22)
             user_pool_size = 1 << (32 - user_prefix)
@@ -234,9 +265,12 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
             "kind": "appliance",
             "name": unique_vpc_name(raw_vpc.get("name")),
             "zones": scoped_zones,
+            "zone_indices": zone_indices,
+            "interlink_zone_indices": set(interlink_zone_indices),
             "appliance_type": appliance_type,
             "zone_size": zone_size,
-            "layout": layout,
+            "layout_with_interlink": layout_with_interlink,
+            "layout_without_interlink": layout_without_interlink,
         })
 
     if raw.get("include_transit_vpc") is True:
@@ -291,9 +325,18 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
                         network, vpc_name, zone, site_name, f"{zone} - {description}",
                     ))
         elif request["kind"] == "appliance":
-            for zone_index, zone in enumerate(request_zones):
-                zone_base = int(block.network_address) + zone_index * request["zone_size"]
-                for offset, subnet_prefix, description in request["layout"]:
+            for zone_position, (zone_index, zone) in enumerate(
+                zip(request["zone_indices"], request_zones, strict=True)
+            ):
+                zone_base = (
+                    int(block.network_address) + zone_position * request["zone_size"]
+                )
+                layout = (
+                    request["layout_with_interlink"]
+                    if zone_index in request["interlink_zone_indices"]
+                    else request["layout_without_interlink"]
+                )
+                for offset, subnet_prefix, description in layout:
                     network = ipaddress.IPv4Network(
                         (zone_base + offset, subnet_prefix)
                     )

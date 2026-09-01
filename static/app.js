@@ -1404,6 +1404,13 @@ function k2ApplianceVpcMarkup({
       <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="32" required value="${esc(tgwPrefix)}"></label>
       <label>Маска пула RA VPN<input data-k2-user-prefix type="number" min="1" max="32" required value="${esc(userPrefix)}"></label>
     </div>
+    <fieldset class="k2-zone-checks k2-interlink-zone-checks">
+      <legend>Interlink в зонах</legend>
+      ${[0, 1, 2].map(index => `<label class="k2-zone-choice" data-k2-interlink-zone-choice>
+        <input data-k2-interlink-zone-checkbox type="checkbox" value="${index}" ${cluster && selectedZoneIndices.includes(index) ? "checked" : ""}>
+        <span data-k2-zone-label>Зона ${index + 1}</span>
+      </label>`).join("")}
+    </fieldset>
   </div>`;
 }
 
@@ -1412,6 +1419,12 @@ function syncK2ApplianceRow(row) {
   interlink.disabled = !row.querySelector("[data-k2-cluster]").checked;
   row.querySelector("[data-k2-user-prefix]").disabled =
     row.querySelector("[data-k2-appliance-type]").value !== "ravpn";
+  const cluster = row.querySelector("[data-k2-cluster]").checked;
+  const deviceZones = [...row.querySelectorAll("[data-k2-zone-checkbox]")];
+  row.querySelectorAll("[data-k2-interlink-zone-checkbox]").forEach((checkbox, index) => {
+    checkbox.disabled = !cluster || deviceZones[index].disabled || !deviceZones[index].checked;
+    checkbox.closest("[data-k2-interlink-zone-choice]").hidden = deviceZones[index].disabled;
+  });
 }
 
 function syncK2ZoneOptions() {
@@ -1434,6 +1447,11 @@ function syncK2ZoneOptions() {
     if (!activeCheckboxes.some(checkbox => checkbox.checked)) {
       activeCheckboxes[0].checked = true;
     }
+    row.querySelectorAll("[data-k2-interlink-zone-checkbox]").forEach((checkbox, index) => {
+      checkbox.closest("label").querySelector("[data-k2-zone-label]").textContent =
+        zoneNames[index] || `Зона ${index + 1}`;
+    });
+    syncK2ApplianceRow(row);
   });
 }
 
@@ -1509,6 +1527,9 @@ function k2CloudPayload() {
         name: row.querySelector("[data-k2-vpc-name]").value.trim(),
         type: row.querySelector("[data-k2-appliance-type]").value,
         zone_indices: [...row.querySelectorAll("[data-k2-zone-checkbox]")]
+          .filter(checkbox => checkbox.checked && !checkbox.disabled)
+          .map(checkbox => Number(checkbox.value)),
+        interlink_zone_indices: [...row.querySelectorAll("[data-k2-interlink-zone-checkbox]")]
           .filter(checkbox => checkbox.checked && !checkbox.disabled)
           .map(checkbox => Number(checkbox.value)),
         cluster: row.querySelector("[data-k2-cluster]").checked,
@@ -2245,7 +2266,9 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
     if (event.target === $("k2ZoneCount")) syncK2ZoneCount();
     const applianceRow = event.target.closest("[data-k2-appliance-vpc]");
-    if (applianceRow && event.target.matches("[data-k2-cluster]")) {
+    if (applianceRow && event.target.matches(
+      "[data-k2-cluster], [data-k2-zone-checkbox]"
+    )) {
       syncK2ApplianceRow(applianceRow);
     }
     if (applianceRow && event.target.matches("[data-k2-appliance-type]")) {

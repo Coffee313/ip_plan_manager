@@ -535,6 +535,13 @@ body {
   flex: 0 0 16px;
   padding: 0;
 }
+.k2-interlink-zone-checks {
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(3, minmax(120px, max-content));
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
+.k2-interlink-zone-checks legend { grid-column: 1 / -1; }
 .k2-checkbox {
   display: flex;
   align-items: center;
@@ -601,6 +608,7 @@ body {
   .generator-mode-field,
   .k2-vpc-row { grid-template-columns: minmax(0, 1fr); }
   .k2-mask-grid { grid-template-columns: minmax(0, 1fr); }
+  .k2-interlink-zone-checks { grid-template-columns: minmax(0, 1fr); }
   .k2-transit-row { grid-template-columns: minmax(0, 1fr); }
   .generator-wide { grid-column: auto; }
   .generator-group { grid-template-columns: minmax(0, 1fr) minmax(100px, .7fr) 32px; }

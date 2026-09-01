@@ -190,6 +190,7 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
             "appliance_vpcs": [
                 {
                     "name": "VPC FW", "type": "firewall", "zone_indices": [0, 2],
+                    "interlink_zone_indices": [2],
                     "cluster": True, "outside_prefix": 26, "inside_prefix": 27,
                     "interlink_prefix": 29, "tgw_prefix": 30,
                 },
@@ -242,6 +243,9 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
     firewall = [item for item in subnets if item["vrf"] == "VPC FW"]
     assert firewall[0]["zone"] == "ZONE-A, ZONE-C"
     assert {item["zone"] for item in firewall[1:]} == {"ZONE-A", "ZONE-C"}
+    assert {
+        item["zone"] for item in firewall if "interlink" in item["description"]
+    } == {"ZONE-C"}
     s2s = [item for item in subnets if item["vrf"] == "VPC S2S"][1:]
     assert {item["zone"] for item in s2s} == {"ZONE-C"}
     assert not any("interlink" in item["description"] for item in s2s)
@@ -299,6 +303,18 @@ def test_k2_cloud_generator_rejects_duplicate_vpcs_and_insufficient_capacity():
         assert "не помещаются" in str(error)
     else:
         raise AssertionError("Ожидалась ошибка емкости K2 Cloud")
+
+    invalid_interlink = k2_cloud_payload()
+    invalid_interlink["k2_cloud"]["appliance_vpcs"][0].update({
+        "zone_indices": [0],
+        "interlink_zone_indices": [1],
+    })
+    try:
+        generate_address_plan(invalid_interlink)
+    except ValueError as error:
+        assert "interlink" in str(error) and "входить" in str(error)
+    else:
+        raise AssertionError("Ожидалась ошибка зоны interlink вне VPC устройства")
 
 
 def test_k2_cloud_vpc_limit_includes_optional_transit_vpc():
@@ -494,7 +510,9 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
     assert "data-k2-workload-vpc" in javascript
     assert "data-k2-appliance-vpc" in javascript
     assert "data-k2-zone-checkbox" in javascript
+    assert "data-k2-interlink-zone-checkbox" in javascript
     assert "zone_indices:" in javascript
+    assert "interlink_zone_indices:" in javascript
     assert "data-k2-zone-scope" not in javascript
     for zone_count in (1, 2, 3):
         assert f'<option value="{zone_count}"' in html
