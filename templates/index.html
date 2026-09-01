@@ -222,19 +222,20 @@
       <section id="k2CloudGeneratorPanel" class="k2-cloud-panel" hidden>
         <div class="k2-cloud-note">
           <strong>K2 Cloud</strong>
-          <span>Для VPC виртуальных машин создаются зональные /24 и транзитные /28 к TGW. Для сетевых устройств — outside, inside, TGW и опциональный interlink кластера.</span>
+          <span>Настройте две или три зоны и маски VM, outside, inside, interlink и транзитных подсетей к TGW.</span>
         </div>
         <div class="generator-site-fields k2-cloud-fields">
           <label>Название площадки *<input id="k2SiteName" required value="K2 Cloud"></label>
           <label>Суперсеть K2 Cloud *<input id="k2Supernet" required placeholder="172.27.128.0/17"></label>
           <label>Зона 1 *<input id="k2PrimaryZone" required value="COMP"></label>
           <label>Зона 2 *<input id="k2SecondaryZone" required value="VOL"></label>
+          <label>Зона 3 (опционально)<input id="k2TertiaryZone" placeholder="AZ3"></label>
         </div>
 
         <div class="k2-vpc-section">
           <div class="generator-groups-heading">
             <strong>VPC виртуальных машин</strong>
-            <span>На каждый VPC: блок /22, VM /24 и TGW /28 в каждой зоне</span>
+            <span>Маски VM и подключения к TGW задаются отдельно для каждого VPC</span>
           </div>
           <div id="k2WorkloadVpcs" class="k2-vpc-list"></div>
           <button id="addK2WorkloadVpcBtn" class="btn tiny secondary" type="button">+ VPC виртуальных машин</button>
@@ -252,6 +253,7 @@
         <div class="k2-transit-row">
           <label class="k2-checkbox"><input id="k2IncludeTransit" type="checkbox" checked> Создать VPC TRANSIT между TGW</label>
           <label>Название транзитного VPC<input id="k2TransitVpcName" value="VPC TRANSIT"></label>
+          <label>Маска подсети в каждой зоне<input id="k2TransitPrefix" type="number" min="1" max="32" value="24"></label>
         </div>
       </section>
 

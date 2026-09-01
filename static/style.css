@@ -484,8 +484,17 @@ body {
   border-radius: 8px;
   background: #fff;
 }
-.k2-workload-row { grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) 32px; }
+.k2-workload-row { grid-template-columns: minmax(180px, 1fr) repeat(2, minmax(110px, .55fr)) 32px; }
+.k2-mask-grid {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  gap: 8px;
+  padding-top: 7px;
+  border-top: 1px solid var(--line);
+}
 .k2-vpc-row label,
+.k2-mask-grid label,
 .k2-transit-row > label:not(.k2-checkbox) {
   display: flex;
   flex-direction: column;
@@ -508,7 +517,7 @@ body {
 .k2-checkbox input { width: 16px; height: 16px; flex: 0 0 16px; }
 .k2-transit-row {
   display: grid;
-  grid-template-columns: minmax(240px, 1fr) minmax(220px, 1fr);
+  grid-template-columns: minmax(240px, 1fr) minmax(220px, 1fr) minmax(160px, .6fr);
   align-items: end;
   gap: 12px;
   padding: 11px;
@@ -543,6 +552,7 @@ body {
   .field.full { grid-column: auto; }
   .generator-site-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .k2-vpc-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .k2-mask-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .k2-vpc-row .generator-remove { justify-self: end; }
   .generator-wide { grid-column: 1 / -1; }
 }
@@ -560,6 +570,7 @@ body {
   .generator-site-fields { grid-template-columns: minmax(0, 1fr); }
   .generator-mode-field,
   .k2-vpc-row { grid-template-columns: minmax(0, 1fr); }
+  .k2-mask-grid { grid-template-columns: minmax(0, 1fr); }
   .k2-transit-row { grid-template-columns: minmax(0, 1fr); }
   .generator-wide { grid-column: auto; }
   .generator-group { grid-template-columns: minmax(0, 1fr) minmax(100px, .7fr) 32px; }

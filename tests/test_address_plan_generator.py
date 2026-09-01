@@ -177,6 +177,90 @@ def test_k2_cloud_generator_builds_vpcs_zones_and_tgw_transit_subnets():
     ]
 
 
+def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
+    payload = {
+        "mode": "k2_cloud",
+        "k2_cloud": {
+            "name": "K2 Cloud",
+            "supernet": "10.0.0.0/8",
+            "zones": ["ZONE-A", "ZONE-B", "ZONE-C"],
+            "workload_vpcs": [{
+                "name": "VPC VM", "vm_prefix": 25, "tgw_prefix": 29,
+            }],
+            "appliance_vpcs": [
+                {
+                    "name": "VPC FW", "type": "firewall", "zone_scope": "all",
+                    "cluster": True, "outside_prefix": 26, "inside_prefix": 27,
+                    "interlink_prefix": 29, "tgw_prefix": 30,
+                },
+                {
+                    "name": "VPC S2S", "type": "s2s_vpn", "zone_scope": "tertiary",
+                    "cluster": False, "outside_prefix": 27, "inside_prefix": 28,
+                    "interlink_prefix": 30, "tgw_prefix": 29,
+                },
+                {
+                    "name": "VPC RAVPN", "type": "ravpn", "zone_scope": "all",
+                    "cluster": True, "outside_prefix": 27, "inside_prefix": 27,
+                    "interlink_prefix": 28, "tgw_prefix": 29, "user_prefix": 20,
+                },
+            ],
+            "include_transit_vpc": True,
+            "transit_vpc_name": "VPC TRANSIT",
+            "transit_prefix": 25,
+        },
+    }
+
+    result = generate_address_plan(payload)
+    subnets = result["sites"][0]["subnets"]
+
+    workload = [item for item in subnets if item["vrf"] == "VPC VM"][1:]
+    assert {item["zone"] for item in workload} == {"ZONE-A", "ZONE-B", "ZONE-C"}
+    assert {
+        item["cidr"].split("/")[1]
+        for item in workload
+        if "виртуальных машин" in item["description"]
+    } == {"25"}
+    assert {
+        item["cidr"].split("/")[1]
+        for item in workload
+        if "TGW" in item["description"]
+    } == {"29"}
+
+    expected_appliance_prefixes = {
+        "VPC FW": {"outside": "26", "inside": "27", "interlink": "29", "TGW": "30"},
+        "VPC S2S": {"outside": "27", "inside": "28", "TGW": "29"},
+        "VPC RAVPN": {"outside": "27", "inside": "27", "interlink": "28", "TGW": "29"},
+    }
+    for vpc, roles in expected_appliance_prefixes.items():
+        children = [item for item in subnets if item["vrf"] == vpc][1:]
+        for role, prefix in roles.items():
+            assert {
+                item["cidr"].split("/")[1]
+                for item in children
+                if role in item["description"]
+            } == {prefix}
+    s2s = [item for item in subnets if item["vrf"] == "VPC S2S"][1:]
+    assert {item["zone"] for item in s2s} == {"ZONE-C"}
+    assert not any("interlink" in item["description"] for item in s2s)
+    assert [item for item in subnets if item["vrf"] == "VPC RAVPN"][0]["cidr"].endswith("/20")
+
+    transit = [item for item in subnets if item["vrf"] == "VPC TRANSIT"][1:]
+    assert {item["zone"] for item in transit} == {"ZONE-A", "ZONE-B", "ZONE-C"}
+    assert {item["cidr"].split("/")[1] for item in transit} == {"25"}
+
+
+def test_k2_cloud_rejects_more_than_three_zones():
+    payload = k2_cloud_payload()
+    payload["k2_cloud"]["zones"] = ["A", "B", "C", "D"]
+
+    try:
+        generate_address_plan(payload)
+    except ValueError as error:
+        assert "две или три зоны" in str(error)
+    else:
+        raise AssertionError("Ожидалось ограничение количества зон")
+
+
 def test_k2_cloud_generator_rejects_duplicate_vpcs_and_insufficient_capacity():
     duplicate = k2_cloud_payload()
     duplicate["k2_cloud"]["appliance_vpcs"][0]["name"] = "VPC INFRA"
@@ -343,6 +427,7 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
         "generatorMode",
         "standardGeneratorPanel",
         "k2CloudGeneratorPanel",
+        "k2TertiaryZone",
         "generatorSites",
         "addGeneratorSiteBtn",
         "k2WorkloadVpcs",
@@ -350,6 +435,7 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
         "k2ApplianceVpcs",
         "addK2ApplianceVpcBtn",
         "k2IncludeTransit",
+        "k2TransitPrefix",
         "previewPlanBtn",
         "applyPlanBtn",
     ):
@@ -358,6 +444,16 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
     assert "data-generator-group" in javascript
     assert "data-k2-workload-vpc" in javascript
     assert "data-k2-appliance-vpc" in javascript
+    for field in (
+        "data-k2-vm-prefix",
+        "data-k2-tgw-prefix",
+        "data-k2-outside-prefix",
+        "data-k2-inside-prefix",
+        "data-k2-interlink-prefix",
+        "data-k2-user-prefix",
+        'value="tertiary"',
+    ):
+        assert field in javascript
     assert 'mode: "k2_cloud"' in javascript
     assert "K2 Cloud" in html
     assert "VPC" in html

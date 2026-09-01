@@ -1361,16 +1361,22 @@ function generatorSiteMarkup(index) {
   </section>`;
 }
 
-function k2WorkloadVpcMarkup(name = "VPC INFRA") {
+function k2WorkloadVpcMarkup(name = "VPC INFRA", vmPrefix = 24, tgwPrefix = 28) {
   return `<div class="k2-vpc-row k2-workload-row" data-k2-workload-vpc>
     <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC INFRA"></label>
-    <span class="k2-vpc-hint">/22 · VM /24 + TGW /28 в каждой зоне</span>
+    <label>Маска VM<input data-k2-vm-prefix type="number" min="1" max="32" required value="${esc(vmPrefix)}"></label>
+    <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="32" required value="${esc(tgwPrefix)}"></label>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
   </div>`;
 }
 
-function k2ApplianceVpcMarkup({name = "VPC FW", type = "firewall", scope = "all", cluster = true} = {}) {
-  return `<div class="k2-vpc-row k2-appliance-row" data-k2-appliance-vpc>
+function k2ApplianceVpcMarkup({
+  name = "VPC FW", type = "firewall", scope = "all", cluster = true,
+  outsidePrefix, insidePrefix = 28, interlinkPrefix = 28, tgwPrefix = 28,
+  userPrefix = 22
+} = {}) {
+  const resolvedOutsidePrefix = outsidePrefix ?? (type === "firewall" ? 25 : 28);
+  return `<div class="k2-vpc-row k2-appliance-row" data-k2-appliance-vpc data-k2-current-type="${esc(type)}">
     <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC FW"></label>
     <label>Тип
       <select data-k2-appliance-type>
@@ -1381,14 +1387,38 @@ function k2ApplianceVpcMarkup({name = "VPC FW", type = "firewall", scope = "all"
     </label>
     <label>Зоны
       <select data-k2-zone-scope>
-        <option value="all" ${scope === "all" ? "selected" : ""}>Обе зоны</option>
+        <option value="all" ${scope === "all" ? "selected" : ""}>Все зоны</option>
         <option value="primary" ${scope === "primary" ? "selected" : ""}>Только зона 1</option>
         <option value="secondary" ${scope === "secondary" ? "selected" : ""}>Только зона 2</option>
+        <option value="tertiary" ${scope === "tertiary" ? "selected" : ""}>Только зона 3</option>
       </select>
     </label>
     <label class="k2-checkbox"><input data-k2-cluster type="checkbox" ${cluster ? "checked" : ""}> Кластер: добавить interlink</label>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
+    <div class="k2-mask-grid">
+      <label>Маска outside<input data-k2-outside-prefix type="number" min="1" max="32" required value="${esc(resolvedOutsidePrefix)}"></label>
+      <label>Маска inside<input data-k2-inside-prefix type="number" min="1" max="32" required value="${esc(insidePrefix)}"></label>
+      <label>Маска interlink<input data-k2-interlink-prefix type="number" min="1" max="32" required value="${esc(interlinkPrefix)}"></label>
+      <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="32" required value="${esc(tgwPrefix)}"></label>
+      <label>Маска пула RA VPN<input data-k2-user-prefix type="number" min="1" max="32" required value="${esc(userPrefix)}"></label>
+    </div>
   </div>`;
+}
+
+function syncK2ApplianceRow(row) {
+  const interlink = row.querySelector("[data-k2-interlink-prefix]");
+  interlink.disabled = !row.querySelector("[data-k2-cluster]").checked;
+  row.querySelector("[data-k2-user-prefix]").disabled =
+    row.querySelector("[data-k2-appliance-type]").value !== "ravpn";
+}
+
+function syncK2ZoneOptions() {
+  const hasThirdZone = Boolean($("k2TertiaryZone").value.trim());
+  $("k2ApplianceVpcs").querySelectorAll("[data-k2-zone-scope]").forEach(select => {
+    const option = select.querySelector('option[value="tertiary"]');
+    option.disabled = !hasThirdZone;
+    if (!hasThirdZone && select.value === "tertiary") select.value = "all";
+  });
 }
 
 function renumberGeneratorSites() {
@@ -1421,6 +1451,9 @@ function setGeneratorMode() {
   });
   if (k2Mode) {
     $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
+    $("k2TransitPrefix").disabled = !$("k2IncludeTransit").checked;
+    $("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]").forEach(syncK2ApplianceRow);
+    syncK2ZoneOptions();
   }
   invalidateGeneratorPreview();
 }
@@ -1431,18 +1464,30 @@ function k2CloudPayload() {
     k2_cloud: {
       name: $("k2SiteName").value.trim(),
       supernet: $("k2Supernet").value.trim(),
-      zones: [$("k2PrimaryZone").value.trim(), $("k2SecondaryZone").value.trim()],
+      zones: [
+        $("k2PrimaryZone").value.trim(),
+        $("k2SecondaryZone").value.trim(),
+        $("k2TertiaryZone").value.trim()
+      ].filter(Boolean),
       workload_vpcs: [...$("k2WorkloadVpcs").querySelectorAll("[data-k2-workload-vpc]")].map(row => ({
-        name: row.querySelector("[data-k2-vpc-name]").value.trim()
+        name: row.querySelector("[data-k2-vpc-name]").value.trim(),
+        vm_prefix: row.querySelector("[data-k2-vm-prefix]").value,
+        tgw_prefix: row.querySelector("[data-k2-tgw-prefix]").value
       })),
       appliance_vpcs: [...$("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]")].map(row => ({
         name: row.querySelector("[data-k2-vpc-name]").value.trim(),
         type: row.querySelector("[data-k2-appliance-type]").value,
         zone_scope: row.querySelector("[data-k2-zone-scope]").value,
-        cluster: row.querySelector("[data-k2-cluster]").checked
+        cluster: row.querySelector("[data-k2-cluster]").checked,
+        outside_prefix: row.querySelector("[data-k2-outside-prefix]").value,
+        inside_prefix: row.querySelector("[data-k2-inside-prefix]").value,
+        interlink_prefix: row.querySelector("[data-k2-interlink-prefix]").value,
+        tgw_prefix: row.querySelector("[data-k2-tgw-prefix]").value,
+        user_prefix: row.querySelector("[data-k2-user-prefix]").value
       })),
       include_transit_vpc: $("k2IncludeTransit").checked,
-      transit_vpc_name: $("k2TransitVpcName").value.trim()
+      transit_vpc_name: $("k2TransitVpcName").value.trim(),
+      transit_prefix: $("k2TransitPrefix").value
     }
   };
 }
@@ -1491,8 +1536,10 @@ function openGeneratorDialog() {
   $("k2Supernet").value = "";
   $("k2PrimaryZone").value = "COMP";
   $("k2SecondaryZone").value = "VOL";
+  $("k2TertiaryZone").value = "";
   $("k2IncludeTransit").checked = true;
   $("k2TransitVpcName").value = "VPC TRANSIT";
+  $("k2TransitPrefix").value = "24";
   $("k2WorkloadVpcs").innerHTML = ["VPC INFRA", "VPC SECUR", "VPC BUSIN", "VPC DMZ"]
     .map(name => k2WorkloadVpcMarkup(name)).join("");
   $("k2ApplianceVpcs").innerHTML = [
@@ -2111,6 +2158,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("k2ApplianceVpcs").insertAdjacentHTML(
       "beforeend", k2ApplianceVpcMarkup({name: `VPC FW ${index}`})
     );
+    syncK2ApplianceRow($("k2ApplianceVpcs").lastElementChild);
+    syncK2ZoneOptions();
     invalidateGeneratorPreview();
   };
   $("previewPlanBtn").onclick = previewGeneratedPlan;
@@ -2153,6 +2202,22 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("k2CloudGeneratorPanel").addEventListener("change", event => {
     if (event.target === $("k2IncludeTransit")) {
       $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
+      $("k2TransitPrefix").disabled = !$("k2IncludeTransit").checked;
+    }
+    if (event.target === $("k2TertiaryZone")) syncK2ZoneOptions();
+    const applianceRow = event.target.closest("[data-k2-appliance-vpc]");
+    if (applianceRow && event.target.matches("[data-k2-cluster]")) {
+      syncK2ApplianceRow(applianceRow);
+    }
+    if (applianceRow && event.target.matches("[data-k2-appliance-type]")) {
+      const previousType = applianceRow.dataset.k2CurrentType;
+      const outsidePrefix = applianceRow.querySelector("[data-k2-outside-prefix]");
+      const previousDefault = previousType === "firewall" ? "25" : "28";
+      if (outsidePrefix.value === previousDefault) {
+        outsidePrefix.value = event.target.value === "firewall" ? "25" : "28";
+      }
+      applianceRow.dataset.k2CurrentType = event.target.value;
+      syncK2ApplianceRow(applianceRow);
     }
     invalidateGeneratorPreview();
   });

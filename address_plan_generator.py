@@ -84,6 +84,35 @@ def _k2_subnet(
     }
 
 
+def _k2_prefix(value: Any, default: int) -> int:
+    return _prefix(default if value is None or str(value).strip() == "" else value)
+
+
+def _k2_zone_layout(
+    roles: list[tuple[str, int]], *, minimum_size: int = 1
+) -> tuple[list[tuple[int, int, str]], int]:
+    """Pack role networks into one aligned zone slot and return offsets."""
+    cursor = 0
+    allocations: list[tuple[int, int, str]] = []
+    for description, prefix in roles:
+        size = 1 << (32 - prefix)
+        aligned = ((cursor + size - 1) // size) * size
+        allocations.append((aligned, prefix, description))
+        cursor = aligned + size
+    zone_size = max(minimum_size, 1 << (max(cursor, 1) - 1).bit_length())
+    if zone_size > (1 << 32):
+        raise ValueError("Выбранные маски подсетей K2 Cloud слишком велики")
+    return allocations, zone_size
+
+
+def _k2_container_prefix(zone_size: int, zone_count: int, minimum_size: int = 1) -> int:
+    required = max(minimum_size, zone_size * zone_count)
+    block_size = 1 << (required - 1).bit_length()
+    if block_size > (1 << 32):
+        raise ValueError("Выбранные маски подсетей K2 Cloud слишком велики")
+    return 32 - (block_size.bit_length() - 1)
+
+
 def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     raw = payload.get("k2_cloud")
     if not isinstance(raw, dict):
@@ -92,13 +121,13 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     site_name = _required_text(raw.get("name"), "название площадки K2 Cloud")
     supernet = _network(raw.get("supernet"), "суперсеть K2 Cloud")
     raw_zones = raw.get("zones")
-    if not isinstance(raw_zones, list) or len(raw_zones) != 2:
-        raise ValueError("Для K2 Cloud укажите две зоны доступности")
+    if not isinstance(raw_zones, list) or len(raw_zones) not in {2, 3}:
+        raise ValueError("Для K2 Cloud укажите две или три зоны доступности")
     zones = [
         _required_text(value, f"название зоны {index}")
         for index, value in enumerate(raw_zones, start=1)
     ]
-    if zones[0].casefold() == zones[1].casefold():
+    if len({zone.casefold() for zone in zones}) != len(zones):
         raise ValueError("Названия зон K2 Cloud должны различаться")
 
     raw_workloads = raw.get("workload_vpcs") or []
@@ -127,11 +156,17 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_vpc in raw_workloads:
         if not isinstance(raw_vpc, dict):
             raise ValueError("Некорректные параметры VPC виртуальных машин")
+        layout, zone_size = _k2_zone_layout([
+            ("подсеть виртуальных машин", _k2_prefix(raw_vpc.get("vm_prefix"), 24)),
+            ("транзитная подсеть к TGW", _k2_prefix(raw_vpc.get("tgw_prefix"), 28)),
+        ])
         requests.append({
-            "prefix": 22,
+            "prefix": _k2_container_prefix(zone_size, len(zones)),
             "kind": "workload",
             "name": unique_vpc_name(raw_vpc.get("name")),
             "zones": zones,
+            "zone_size": zone_size,
+            "layout": layout,
         })
 
     for raw_vpc in raw_appliances:
@@ -144,29 +179,59 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
         scoped_zones = {
             "all": zones,
             "primary": zones[:1],
-            "secondary": zones[1:],
+            "secondary": zones[1:2],
+            "tertiary": zones[2:3] if len(zones) == 3 else None,
         }.get(zone_scope)
-        if scoped_zones is None:
+        if not scoped_zones:
             raise ValueError("Некорректный выбор зон для VPC сетевых устройств")
+        label = _K2_APPLIANCE_LABELS[appliance_type]
+        cluster = raw_vpc.get("cluster") is True
+        default_outside_prefix = 25 if appliance_type == "firewall" else 28
+        roles = [
+            (f"{label} outside", _k2_prefix(
+                raw_vpc.get("outside_prefix"), default_outside_prefix
+            )),
+            (f"{label} inside", _k2_prefix(raw_vpc.get("inside_prefix"), 28)),
+        ]
+        if cluster:
+            roles.append((
+                f"{label} interlink", _k2_prefix(raw_vpc.get("interlink_prefix"), 28)
+            ))
+        roles.append((
+            "транзитная подсеть к TGW", _k2_prefix(raw_vpc.get("tgw_prefix"), 28)
+        ))
+        layout, zone_size = _k2_zone_layout(roles, minimum_size=256)
+        if appliance_type == "ravpn":
+            user_prefix = _k2_prefix(raw_vpc.get("user_prefix"), 22)
+            user_pool_size = 1 << (32 - user_prefix)
+            if zone_size * len(scoped_zones) > user_pool_size:
+                raise ValueError(
+                    "Маска пула пользователей RA VPN слишком мала для выбранных зон и подсетей"
+                )
+            vpc_prefix = user_prefix
+        else:
+            vpc_prefix = _k2_container_prefix(zone_size, len(scoped_zones))
         requests.append({
-            "prefix": (
-                22
-                if appliance_type == "ravpn"
-                else (23 if len(scoped_zones) == 2 else 24)
-            ),
+            "prefix": vpc_prefix,
             "kind": "appliance",
             "name": unique_vpc_name(raw_vpc.get("name")),
             "zones": scoped_zones,
             "appliance_type": appliance_type,
-            "cluster": raw_vpc.get("cluster") is True,
+            "zone_size": zone_size,
+            "layout": layout,
         })
 
     if raw.get("include_transit_vpc") is True:
+        layout, zone_size = _k2_zone_layout([
+            ("транзитная сеть между TGW", _k2_prefix(raw.get("transit_prefix"), 24)),
+        ])
         requests.append({
-            "prefix": 23,
+            "prefix": _k2_container_prefix(zone_size, len(zones)),
             "kind": "transit",
             "name": unique_vpc_name(raw.get("transit_vpc_name") or "VPC TRANSIT"),
             "zones": zones,
+            "zone_size": zone_size,
+            "layout": layout,
         })
 
     if not requests:
@@ -186,7 +251,7 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
         aligned = ((cursor + size - 1) // size) * size
         if aligned + size > limit:
             raise ValueError(f"VPC K2 Cloud не помещаются в суперсеть {supernet}")
-        block = ipaddress.ip_network((aligned, prefix))
+        block = ipaddress.IPv4Network((aligned, prefix))
         vpc_name = request["name"]
         request_zones = request["zones"]
         segment_description = (
@@ -201,44 +266,17 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
 
         if request["kind"] == "workload":
             for zone_index, zone in enumerate(request_zones):
-                zone_base = block.network_address + (zone_index * 2 * 256)
-                vm_network = ipaddress.ip_network((int(zone_base), 24))
-                tgw_network = ipaddress.ip_network((int(zone_base) + 256, 28))
-                generated_subnets.extend([
-                    _k2_subnet(
-                        vm_network, vpc_name, zone, site_name,
-                        f"{zone} - подсеть виртуальных машин",
-                    ),
-                    _k2_subnet(
-                        tgw_network, vpc_name, zone, site_name,
-                        f"{zone} - транзитная подсеть к TGW",
-                    ),
-                ])
+                zone_base = int(block.network_address) + zone_index * request["zone_size"]
+                for offset, subnet_prefix, description in request["layout"]:
+                    network = ipaddress.IPv4Network((zone_base + offset, subnet_prefix))
+                    generated_subnets.append(_k2_subnet(
+                        network, vpc_name, zone, site_name, f"{zone} - {description}",
+                    ))
         elif request["kind"] == "appliance":
-            label = _K2_APPLIANCE_LABELS[request["appliance_type"]]
             for zone_index, zone in enumerate(request_zones):
-                zone_base = int(block.network_address) + zone_index * 256
-                if request["appliance_type"] == "firewall":
-                    allocations = [
-                        (0, 25, f"{label} outside"),
-                        (128, 28, f"{label} inside"),
-                    ]
-                    next_offset = 144
-                    if request["cluster"]:
-                        allocations.append((next_offset, 28, f"{label} interlink"))
-                        next_offset += 16
-                    allocations.append((next_offset, 28, "транзитная подсеть к TGW"))
-                else:
-                    descriptions = [f"{label} outside", f"{label} inside"]
-                    if request["cluster"]:
-                        descriptions.append(f"{label} interlink")
-                    descriptions.append("транзитная подсеть к TGW")
-                    allocations = [
-                        (subnet_index * 16, 28, description)
-                        for subnet_index, description in enumerate(descriptions)
-                    ]
-                for offset, subnet_prefix, description in allocations:
-                    network = ipaddress.ip_network(
+                zone_base = int(block.network_address) + zone_index * request["zone_size"]
+                for offset, subnet_prefix, description in request["layout"]:
+                    network = ipaddress.IPv4Network(
                         (zone_base + offset, subnet_prefix)
                     )
                     generated_subnets.append(_k2_subnet(
@@ -247,13 +285,12 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
                     ))
         else:
             for zone_index, zone in enumerate(request_zones):
-                network = ipaddress.ip_network(
-                    (int(block.network_address) + zone_index * 256, 24)
-                )
-                generated_subnets.append(_k2_subnet(
-                    network, vpc_name, zone, site_name,
-                    f"{zone} - транзитная сеть между TGW",
-                ))
+                zone_base = int(block.network_address) + zone_index * request["zone_size"]
+                for offset, subnet_prefix, description in request["layout"]:
+                    network = ipaddress.IPv4Network((zone_base + offset, subnet_prefix))
+                    generated_subnets.append(_k2_subnet(
+                        network, vpc_name, zone, site_name, f"{zone} - {description}",
+                    ))
 
         used_addresses += block.num_addresses
         cursor = aligned + size
@@ -366,7 +403,7 @@ def _generate_standard_plan(payload: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError(
                     f"Подсети площадки «{name}» не помещаются в суперсеть {supernet}"
                 )
-            subnet = ipaddress.ip_network((aligned, prefix))
+            subnet = ipaddress.IPv4Network((aligned, prefix))
             generated_subnets.append(
                 {
                     "cidr": str(subnet),
