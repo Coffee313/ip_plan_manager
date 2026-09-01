@@ -175,13 +175,31 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
         appliance_type = str(raw_vpc.get("type") or "").strip()
         if appliance_type not in _K2_APPLIANCE_LABELS:
             raise ValueError("Тип VPC должен быть Firewall, S2S VPN или RA VPN")
-        zone_scope = str(raw_vpc.get("zone_scope") or "all").strip()
-        scoped_zones = {
-            "all": zones,
-            "primary": zones[:1],
-            "secondary": zones[1:2],
-            "tertiary": zones[2:3] if len(zones) == 3 else None,
-        }.get(zone_scope)
+        raw_zone_indices = raw_vpc.get("zone_indices")
+        if raw_zone_indices is not None:
+            if not isinstance(raw_zone_indices, list) or not raw_zone_indices:
+                raise ValueError("Выберите хотя бы одну зону для VPC сетевых устройств")
+            if any(
+                isinstance(index, bool) or not isinstance(index, int)
+                for index in raw_zone_indices
+            ):
+                raise ValueError("Некорректный выбор зон для VPC сетевых устройств")
+            zone_indices = sorted(raw_zone_indices)
+            if (
+                len(set(zone_indices)) != len(zone_indices)
+                or zone_indices[0] < 0
+                or zone_indices[-1] >= len(zones)
+            ):
+                raise ValueError("Некорректный выбор зон для VPC сетевых устройств")
+            scoped_zones = [zones[index] for index in zone_indices]
+        else:
+            zone_scope = str(raw_vpc.get("zone_scope") or "all").strip()
+            scoped_zones = {
+                "all": zones,
+                "primary": zones[:1],
+                "secondary": zones[1:2],
+                "tertiary": zones[2:3] if len(zones) == 3 else None,
+            }.get(zone_scope)
         if not scoped_zones:
             raise ValueError("Некорректный выбор зон для VPC сетевых устройств")
         label = _K2_APPLIANCE_LABELS[appliance_type]

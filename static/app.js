@@ -1376,6 +1376,9 @@ function k2ApplianceVpcMarkup({
   userPrefix = 22
 } = {}) {
   const resolvedOutsidePrefix = outsidePrefix ?? (type === "firewall" ? 25 : 28);
+  const selectedZoneIndices = {
+    all: [0, 1, 2], primary: [0], secondary: [1], tertiary: [2]
+  }[scope] || [0, 1, 2];
   return `<div class="k2-vpc-row k2-appliance-row" data-k2-appliance-vpc data-k2-current-type="${esc(type)}">
     <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC FW"></label>
     <label>Тип
@@ -1385,14 +1388,13 @@ function k2ApplianceVpcMarkup({
         <option value="ravpn" ${type === "ravpn" ? "selected" : ""}>RA VPN</option>
       </select>
     </label>
-    <label>Зоны
-      <select data-k2-zone-scope>
-        <option value="all" ${scope === "all" ? "selected" : ""}>Все зоны</option>
-        <option value="primary" ${scope === "primary" ? "selected" : ""}>Только зона 1</option>
-        <option value="secondary" ${scope === "secondary" ? "selected" : ""}>Только зона 2</option>
-        <option value="tertiary" ${scope === "tertiary" ? "selected" : ""}>Только зона 3</option>
-      </select>
-    </label>
+    <fieldset class="k2-zone-checks">
+      <legend>Зоны</legend>
+      ${[0, 1, 2].map(index => `<label class="k2-zone-choice" data-k2-zone-choice>
+        <input data-k2-zone-checkbox type="checkbox" value="${index}" ${selectedZoneIndices.includes(index) ? "checked" : ""}>
+        <span data-k2-zone-label>Зона ${index + 1}</span>
+      </label>`).join("")}
+    </fieldset>
     <label class="k2-checkbox"><input data-k2-cluster type="checkbox" ${cluster ? "checked" : ""}> Кластер: добавить interlink</label>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
     <div class="k2-mask-grid">
@@ -1414,10 +1416,24 @@ function syncK2ApplianceRow(row) {
 
 function syncK2ZoneOptions() {
   const zoneCount = Number($("k2ZoneCount").value);
-  $("k2ApplianceVpcs").querySelectorAll("[data-k2-zone-scope]").forEach(select => {
-    select.querySelector('option[value="secondary"]').disabled = zoneCount < 2;
-    select.querySelector('option[value="tertiary"]').disabled = zoneCount < 3;
-    if (select.selectedOptions[0]?.disabled) select.value = "all";
+  const zoneNames = [
+    $("k2PrimaryZone").value.trim(),
+    $("k2SecondaryZone").value.trim(),
+    $("k2TertiaryZone").value.trim()
+  ];
+  $("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]").forEach(row => {
+    const checkboxes = [...row.querySelectorAll("[data-k2-zone-checkbox]")];
+    checkboxes.forEach((checkbox, index) => {
+      const active = index < zoneCount;
+      checkbox.disabled = !active;
+      checkbox.closest("[data-k2-zone-choice]").hidden = !active;
+      checkbox.closest("label").querySelector("[data-k2-zone-label]").textContent =
+        zoneNames[index] || `Зона ${index + 1}`;
+    });
+    const activeCheckboxes = checkboxes.filter(checkbox => !checkbox.disabled);
+    if (!activeCheckboxes.some(checkbox => checkbox.checked)) {
+      activeCheckboxes[0].checked = true;
+    }
   });
 }
 
@@ -1492,7 +1508,9 @@ function k2CloudPayload() {
       appliance_vpcs: [...$("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]")].map(row => ({
         name: row.querySelector("[data-k2-vpc-name]").value.trim(),
         type: row.querySelector("[data-k2-appliance-type]").value,
-        zone_scope: row.querySelector("[data-k2-zone-scope]").value,
+        zone_indices: [...row.querySelectorAll("[data-k2-zone-checkbox]")]
+          .filter(checkbox => checkbox.checked && !checkbox.disabled)
+          .map(checkbox => Number(checkbox.value)),
         cluster: row.querySelector("[data-k2-cluster]").checked,
         outside_prefix: row.querySelector("[data-k2-outside-prefix]").value,
         inside_prefix: row.querySelector("[data-k2-inside-prefix]").value,
@@ -2214,7 +2232,12 @@ document.addEventListener("DOMContentLoaded", async () => {
       invalidateGeneratorPreview();
     }
   });
-  $("k2CloudGeneratorPanel").addEventListener("input", invalidateGeneratorPreview);
+  $("k2CloudGeneratorPanel").addEventListener("input", event => {
+    if (["k2PrimaryZone", "k2SecondaryZone", "k2TertiaryZone"].includes(event.target.id)) {
+      syncK2ZoneOptions();
+    }
+    invalidateGeneratorPreview();
+  });
   $("k2CloudGeneratorPanel").addEventListener("change", event => {
     if (event.target === $("k2IncludeTransit")) {
       $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
