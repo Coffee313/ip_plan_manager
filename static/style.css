@@ -460,6 +460,7 @@ body {
 .generator-remove { margin-bottom: 1px; }
 .k2-cloud-panel { display: grid; gap: 14px; }
 .k2-cloud-panel[hidden] { display: none; }
+.k2-cloud-fields label[hidden] { display: none; }
 .k2-cloud-note {
   display: grid;
   gap: 4px;

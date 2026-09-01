@@ -1413,12 +1413,26 @@ function syncK2ApplianceRow(row) {
 }
 
 function syncK2ZoneOptions() {
-  const hasThirdZone = Boolean($("k2TertiaryZone").value.trim());
+  const zoneCount = Number($("k2ZoneCount").value);
   $("k2ApplianceVpcs").querySelectorAll("[data-k2-zone-scope]").forEach(select => {
-    const option = select.querySelector('option[value="tertiary"]');
-    option.disabled = !hasThirdZone;
-    if (!hasThirdZone && select.value === "tertiary") select.value = "all";
+    select.querySelector('option[value="secondary"]').disabled = zoneCount < 2;
+    select.querySelector('option[value="tertiary"]').disabled = zoneCount < 3;
+    if (select.selectedOptions[0]?.disabled) select.value = "all";
   });
+}
+
+function syncK2ZoneCount() {
+  const zoneCount = Number($("k2ZoneCount").value);
+  [
+    [$("k2PrimaryZoneField"), $("k2PrimaryZone")],
+    [$("k2SecondaryZoneField"), $("k2SecondaryZone")],
+    [$("k2TertiaryZoneField"), $("k2TertiaryZone")]
+  ].forEach(([field, input], index) => {
+    const active = index < zoneCount;
+    field.hidden = !active;
+    input.disabled = !active;
+  });
+  syncK2ZoneOptions();
 }
 
 function renumberGeneratorSites() {
@@ -1453,12 +1467,13 @@ function setGeneratorMode() {
     $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
     $("k2TransitPrefix").disabled = !$("k2IncludeTransit").checked;
     $("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]").forEach(syncK2ApplianceRow);
-    syncK2ZoneOptions();
+    syncK2ZoneCount();
   }
   invalidateGeneratorPreview();
 }
 
 function k2CloudPayload() {
+  const zoneCount = Number($("k2ZoneCount").value);
   return {
     mode: "k2_cloud",
     k2_cloud: {
@@ -1468,7 +1483,7 @@ function k2CloudPayload() {
         $("k2PrimaryZone").value.trim(),
         $("k2SecondaryZone").value.trim(),
         $("k2TertiaryZone").value.trim()
-      ].filter(Boolean),
+      ].slice(0, zoneCount),
       workload_vpcs: [...$("k2WorkloadVpcs").querySelectorAll("[data-k2-workload-vpc]")].map(row => ({
         name: row.querySelector("[data-k2-vpc-name]").value.trim(),
         vm_prefix: row.querySelector("[data-k2-vm-prefix]").value,
@@ -1534,9 +1549,10 @@ function openGeneratorDialog() {
   $("generatorSites").innerHTML = "";
   $("k2SiteName").value = "K2 Cloud";
   $("k2Supernet").value = "";
+  $("k2ZoneCount").value = "2";
   $("k2PrimaryZone").value = "COMP";
   $("k2SecondaryZone").value = "VOL";
-  $("k2TertiaryZone").value = "";
+  $("k2TertiaryZone").value = "AZ3";
   $("k2IncludeTransit").checked = true;
   $("k2TransitVpcName").value = "VPC TRANSIT";
   $("k2TransitPrefix").value = "24";
@@ -2204,7 +2220,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       $("k2TransitVpcName").disabled = !$("k2IncludeTransit").checked;
       $("k2TransitPrefix").disabled = !$("k2IncludeTransit").checked;
     }
-    if (event.target === $("k2TertiaryZone")) syncK2ZoneOptions();
+    if (event.target === $("k2ZoneCount")) syncK2ZoneCount();
     const applianceRow = event.target.closest("[data-k2-appliance-vpc]");
     if (applianceRow && event.target.matches("[data-k2-cluster]")) {
       syncK2ApplianceRow(applianceRow);

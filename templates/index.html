@@ -222,14 +222,21 @@
       <section id="k2CloudGeneratorPanel" class="k2-cloud-panel" hidden>
         <div class="k2-cloud-note">
           <strong>K2 Cloud</strong>
-          <span>Настройте две или три зоны и маски VM, outside, inside, interlink и транзитных подсетей к TGW.</span>
+          <span>Выберите от одной до трех зон и настройте маски VM, outside, inside, interlink и транзитных подсетей к TGW.</span>
         </div>
         <div class="generator-site-fields k2-cloud-fields">
           <label>Название площадки *<input id="k2SiteName" required value="K2 Cloud"></label>
           <label>Суперсеть K2 Cloud *<input id="k2Supernet" required placeholder="172.27.128.0/17"></label>
-          <label>Зона 1 *<input id="k2PrimaryZone" required value="COMP"></label>
-          <label>Зона 2 *<input id="k2SecondaryZone" required value="VOL"></label>
-          <label>Зона 3 (опционально)<input id="k2TertiaryZone" placeholder="AZ3"></label>
+          <label>Количество зон
+            <select id="k2ZoneCount">
+              <option value="1">1 зона</option>
+              <option value="2" selected>2 зоны</option>
+              <option value="3">3 зоны</option>
+            </select>
+          </label>
+          <label id="k2PrimaryZoneField">Зона 1 *<input id="k2PrimaryZone" required value="COMP"></label>
+          <label id="k2SecondaryZoneField">Зона 2 *<input id="k2SecondaryZone" required value="VOL"></label>
+          <label id="k2TertiaryZoneField">Зона 3 *<input id="k2TertiaryZone" required value="AZ3"></label>
         </div>
 
         <div class="k2-vpc-section">

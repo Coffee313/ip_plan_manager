@@ -249,6 +249,23 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
     assert {item["cidr"].split("/")[1] for item in transit} == {"25"}
 
 
+def test_k2_cloud_supports_one_availability_zone():
+    payload = k2_cloud_payload()
+    payload["k2_cloud"]["zones"] = ["ONLY-ZONE"]
+
+    result = generate_address_plan(payload)
+    subnets = result["sites"][0]["subnets"]
+
+    assert {
+        item["zone"]
+        for item in subnets
+        if item["zone"] and "," not in item["zone"]
+    } == {"ONLY-ZONE"}
+    transit = [item for item in subnets if item["vrf"] == "VPC TRANSIT"]
+    assert [item["cidr"].split("/")[1] for item in transit] == ["23", "24"]
+    assert len({item["cidr"] for item in transit}) == 2
+
+
 def test_k2_cloud_rejects_more_than_three_zones():
     payload = k2_cloud_payload()
     payload["k2_cloud"]["zones"] = ["A", "B", "C", "D"]
@@ -256,7 +273,7 @@ def test_k2_cloud_rejects_more_than_three_zones():
     try:
         generate_address_plan(payload)
     except ValueError as error:
-        assert "две или три зоны" in str(error)
+        assert "одну, две или три зоны" in str(error)
     else:
         raise AssertionError("Ожидалось ограничение количества зон")
 
@@ -427,6 +444,7 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
         "generatorMode",
         "standardGeneratorPanel",
         "k2CloudGeneratorPanel",
+        "k2ZoneCount",
         "k2TertiaryZone",
         "generatorSites",
         "addGeneratorSiteBtn",
@@ -444,6 +462,9 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
     assert "data-generator-group" in javascript
     assert "data-k2-workload-vpc" in javascript
     assert "data-k2-appliance-vpc" in javascript
+    for zone_count in (1, 2, 3):
+        assert f'<option value="{zone_count}"' in html
+    assert ".slice(0, zoneCount)" in javascript
     for field in (
         "data-k2-vm-prefix",
         "data-k2-tgw-prefix",

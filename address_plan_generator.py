@@ -121,8 +121,8 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     site_name = _required_text(raw.get("name"), "название площадки K2 Cloud")
     supernet = _network(raw.get("supernet"), "суперсеть K2 Cloud")
     raw_zones = raw.get("zones")
-    if not isinstance(raw_zones, list) or len(raw_zones) not in {2, 3}:
-        raise ValueError("Для K2 Cloud укажите две или три зоны доступности")
+    if not isinstance(raw_zones, list) or len(raw_zones) not in {1, 2, 3}:
+        raise ValueError("Для K2 Cloud укажите одну, две или три зоны доступности")
     zones = [
         _required_text(value, f"название зоны {index}")
         for index, value in enumerate(raw_zones, start=1)
@@ -226,7 +226,7 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
             ("транзитная сеть между TGW", _k2_prefix(raw.get("transit_prefix"), 24)),
         ])
         requests.append({
-            "prefix": _k2_container_prefix(zone_size, len(zones)),
+            "prefix": _k2_container_prefix(zone_size, max(2, len(zones))),
             "kind": "transit",
             "name": unique_vpc_name(raw.get("transit_vpc_name") or "VPC TRANSIT"),
             "zones": zones,
