@@ -402,6 +402,34 @@ def test_k2_cloud_preview_and_apply_persist_vpc_hierarchy(tmp_path):
     assert len(infra["children"]) == 4
 
 
+def test_k2_cloud_one_zone_apply_builds_transit_parent_child_tree(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    user = register(client, "Архитектор")
+    created = client.post(
+        "/api/projects",
+        json={"name": "Одна зона", "pin": "1234"},
+        headers={"X-User-Token": user["access_token"]},
+    ).get_json()["data"]
+    project_id = created["project"]["id"]
+    auth = headers(user, project_id, created["access_token"])
+    payload = k2_cloud_payload()
+    payload["k2_cloud"]["zones"] = ["ONLY-ZONE"]
+
+    applied = client.post("/api/address-plan/apply", json=payload, headers=auth)
+
+    assert applied.status_code == 200
+    state, revision = store.state(project_id)
+    assert revision == 1
+    transit = next(
+        node
+        for node in state["sites"][0]["tree"]
+        if node["vrf"] == "VPC TRANSIT"
+    )
+    assert transit["cidr"] == "172.27.134.0/23"
+    assert [child["cidr"] for child in transit["children"]] == ["172.27.134.0/24"]
+
+
 def test_apply_rolls_back_all_sites_when_one_conflicts(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()
