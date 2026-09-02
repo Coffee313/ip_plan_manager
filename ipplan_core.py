@@ -369,6 +369,30 @@ class Workspace:
         candidates.sort(reverse=True)
         return candidates[0][1]
 
+    def inferred_vrf_for_new_subnet(
+        self,
+        site: dict[str, Any],
+        new_net: ipaddress.IPv4Network,
+        selected_parent_id: str,
+    ) -> str:
+        for subnet in site["subnets"]:
+            if subnet["id"] == selected_parent_id:
+                return subnet_vrf(subnet)
+
+        containers: list[tuple[int, str]] = []
+        for subnet in site["subnets"]:
+            network = parse_network(subnet["cidr"])
+            if new_net.subnet_of(network) and new_net != network:
+                containers.append((network.prefixlen, subnet_vrf(subnet)))
+        if not containers:
+            return ""
+
+        most_specific_prefix = max(prefix for prefix, _vrf in containers)
+        candidate_vrfs = {
+            vrf for prefix, vrf in containers if prefix == most_specific_prefix
+        }
+        return next(iter(candidate_vrfs)) if len(candidate_vrfs) == 1 else ""
+
     def tree_for_site(self, site: dict[str, Any]) -> list[dict[str, Any]]:
         children: dict[str, list[dict[str, Any]]] = {}
         site_net = parse_network(site["cidr"])
@@ -587,6 +611,9 @@ class Workspace:
         site, parent_net = self.find_parent_network(parent_id)
         new_net = parse_network(payload.get("cidr", ""))
         new_vrf = vrf_name(payload.get("vrf"))
+
+        if not new_vrf:
+            new_vrf = self.inferred_vrf_for_new_subnet(site, new_net, parent_id)
 
         if new_net == parent_net or not new_net.subnet_of(parent_net):
             raise ValueError(f"Новая подсеть должна находиться внутри выбранной сети {parent_net}")

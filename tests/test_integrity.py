@@ -141,3 +141,36 @@ def test_vrf_scopes_duplicate_validation_and_subnet_deletion(tmp_path):
 
     remaining_ids = {subnet["id"] for subnet in workspace.sites[0]["subnets"]}
     assert remaining_ids == {red["id"], red_child["id"]}
+
+
+def test_new_subnet_inherits_unique_containing_vrf_and_tree_parent(tmp_path):
+    workspace = Workspace(tmp_path)
+    site = workspace.create_site({
+        "name": "K2 Cloud", "cidr": "172.27.128.0/17",
+    })
+    parent = workspace.create_subnet({
+        "parent_id": site["id"],
+        "cidr": "172.27.128.0/21",
+        "vrf": "VPC INFRA",
+    })
+
+    child = workspace.create_subnet({
+        "parent_id": site["id"],
+        "cidr": "172.27.134.0/24",
+    })
+
+    assert child["actual_parent_id"] == parent["id"]
+    tree = workspace.state_json()["sites"][0]["tree"]
+    assert [(node["cidr"], node["vrf"]) for node in tree] == [
+        ("172.27.128.0/21", "VPC INFRA"),
+    ]
+    assert [(node["cidr"], node["vrf"]) for node in tree[0]["children"]] == [
+        ("172.27.134.0/24", "VPC INFRA"),
+    ]
+
+    reloaded = Workspace(tmp_path)
+    assert reloaded.load_saved() is True
+    reloaded_tree = reloaded.state_json()["sites"][0]["tree"]
+    assert [node["cidr"] for node in reloaded_tree[0]["children"]] == [
+        "172.27.134.0/24",
+    ]
