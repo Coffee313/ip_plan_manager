@@ -185,24 +185,25 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
             "supernet": "10.0.0.0/8",
             "zones": ["ZONE-A", "ZONE-B", "ZONE-C"],
             "workload_vpcs": [{
-                "name": "VPC VM", "vm_prefix": 25, "tgw_prefix": 29,
+                "name": "VPC VM", "vm_prefix": 25, "tgw_prefix": 28,
             }],
             "appliance_vpcs": [
                 {
                     "name": "VPC FW", "type": "firewall", "zone_indices": [0, 2],
                     "interlink_zone_indices": [2],
+                    "ravpn_enabled": True, "ravpn_prefix": 24,
                     "cluster": True, "outside_prefix": 26, "inside_prefix": 27,
-                    "interlink_prefix": 29, "tgw_prefix": 30,
+                    "interlink_prefix": 28, "tgw_prefix": 28,
                 },
                 {
                     "name": "VPC S2S", "type": "s2s_vpn", "zone_scope": "tertiary",
                     "cluster": False, "outside_prefix": 27, "inside_prefix": 28,
-                    "interlink_prefix": 30, "tgw_prefix": 29,
+                    "interlink_prefix": 28, "tgw_prefix": 28,
                 },
                 {
                     "name": "VPC RAVPN", "type": "ravpn", "zone_scope": "all",
                     "cluster": True, "outside_prefix": 27, "inside_prefix": 27,
-                    "interlink_prefix": 28, "tgw_prefix": 29, "user_prefix": 20,
+                    "interlink_prefix": 28, "tgw_prefix": 28, "user_prefix": 20,
                 },
             ],
             "include_transit_vpc": True,
@@ -225,12 +226,12 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
         item["cidr"].split("/")[1]
         for item in workload
         if "TGW" in item["description"]
-    } == {"29"}
+    } == {"28"}
 
     expected_appliance_prefixes = {
-        "VPC FW": {"outside": "26", "inside": "27", "interlink": "29", "TGW": "30"},
-        "VPC S2S": {"outside": "27", "inside": "28", "TGW": "29"},
-        "VPC RAVPN": {"outside": "27", "inside": "27", "interlink": "28", "TGW": "29"},
+        "VPC FW": {"outside": "26", "inside": "27", "interlink": "28", "TGW": "28"},
+        "VPC S2S": {"outside": "27", "inside": "28", "TGW": "28"},
+        "VPC RAVPN": {"outside": "27", "inside": "27", "interlink": "28", "TGW": "28"},
     }
     for vpc, roles in expected_appliance_prefixes.items():
         children = [item for item in subnets if item["vrf"] == vpc][1:]
@@ -246,6 +247,11 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
     assert {
         item["zone"] for item in firewall if "interlink" in item["description"]
     } == {"ZONE-C"}
+    firewall_ravpn = [
+        item for item in firewall if "RAVPN" in item["description"]
+    ]
+    assert {item["zone"] for item in firewall_ravpn} == {"ZONE-A", "ZONE-C"}
+    assert {item["cidr"].split("/")[1] for item in firewall_ravpn} == {"24"}
     s2s = [item for item in subnets if item["vrf"] == "VPC S2S"][1:]
     assert {item["zone"] for item in s2s} == {"ZONE-C"}
     assert not any("interlink" in item["description"] for item in s2s)
@@ -283,6 +289,50 @@ def test_k2_cloud_rejects_more_than_three_zones():
         assert "одну, две или три зоны" in str(error)
     else:
         raise AssertionError("Ожидалось ограничение количества зон")
+
+
+def test_k2_cloud_rejects_prefixes_from_29_to_32():
+    invalid_payloads = []
+
+    workload = k2_cloud_payload()
+    workload["k2_cloud"]["workload_vpcs"][0]["tgw_prefix"] = 29
+    invalid_payloads.append(workload)
+
+    workload_vm = k2_cloud_payload()
+    workload_vm["k2_cloud"]["workload_vpcs"][0]["vm_prefix"] = 29
+    invalid_payloads.append(workload_vm)
+
+    appliance = k2_cloud_payload()
+    appliance["k2_cloud"]["appliance_vpcs"][0]["inside_prefix"] = 30
+    invalid_payloads.append(appliance)
+
+    for field in ("outside_prefix", "interlink_prefix", "tgw_prefix"):
+        appliance_field = k2_cloud_payload()
+        appliance_field["k2_cloud"]["appliance_vpcs"][0][field] = 29
+        invalid_payloads.append(appliance_field)
+
+    user_pool = k2_cloud_payload()
+    user_pool["k2_cloud"]["appliance_vpcs"][2]["user_prefix"] = 31
+    invalid_payloads.append(user_pool)
+
+    transit = k2_cloud_payload()
+    transit["k2_cloud"]["transit_prefix"] = 32
+    invalid_payloads.append(transit)
+
+    firewall_ravpn = k2_cloud_payload()
+    firewall_ravpn["k2_cloud"]["appliance_vpcs"][0].update({
+        "ravpn_enabled": True,
+        "ravpn_prefix": 29,
+    })
+    invalid_payloads.append(firewall_ravpn)
+
+    for payload in invalid_payloads:
+        try:
+            generate_address_plan(payload)
+        except ValueError as error:
+            assert "/1 до /28" in str(error)
+        else:
+            raise AssertionError("Ожидался запрет масок /29–/32 в K2 Cloud")
 
 
 def test_k2_cloud_generator_rejects_duplicate_vpcs_and_insufficient_capacity():
@@ -511,9 +561,15 @@ def test_multi_site_generator_ui_is_responsive_and_requires_preview():
     assert "data-k2-appliance-vpc" in javascript
     assert "data-k2-zone-checkbox" in javascript
     assert "data-k2-interlink-zone-checkbox" in javascript
+    assert "data-k2-firewall-ravpn" in javascript
+    assert "data-k2-ravpn-prefix" in javascript
     assert "zone_indices:" in javascript
     assert "interlink_zone_indices:" in javascript
     assert "data-k2-zone-scope" not in javascript
+    assert 'max="32"' not in javascript
+    assert 'id="k2TransitPrefix" type="number" min="1" max="28"' in html
+    assert 'id="k2SecondaryZone" required value="VOL51"' in html
+    assert 'id="k2TertiaryZone" required value="VOL52"' in html
     for zone_count in (1, 2, 3):
         assert f'<option value="{zone_count}"' in html
     assert ".slice(0, zoneCount)" in javascript

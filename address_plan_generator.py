@@ -85,7 +85,10 @@ def _k2_subnet(
 
 
 def _k2_prefix(value: Any, default: int) -> int:
-    return _prefix(default if value is None or str(value).strip() == "" else value)
+    prefix = _prefix(default if value is None or str(value).strip() == "" else value)
+    if prefix > 28:
+        raise ValueError("В K2 Cloud разрешены маски от /1 до /28")
+    return prefix
 
 
 def _k2_zone_layout(
@@ -233,6 +236,10 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
             )),
             (f"{label} inside", _k2_prefix(raw_vpc.get("inside_prefix"), 28)),
         ]
+        if appliance_type == "firewall" and raw_vpc.get("ravpn_enabled") is True:
+            common_roles.append((
+                "Firewall RAVPN", _k2_prefix(raw_vpc.get("ravpn_prefix"), 24)
+            ))
         tgw_role = (
             "транзитная подсеть к TGW", _k2_prefix(raw_vpc.get("tgw_prefix"), 28)
         )

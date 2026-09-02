@@ -489,7 +489,7 @@ body {
 .k2-mask-grid {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(5, minmax(110px, 1fr));
+  grid-template-columns: repeat(6, minmax(100px, 1fr));
   gap: 8px;
   padding-top: 7px;
   border-top: 1px solid var(--line);
@@ -506,6 +506,9 @@ body {
   font-weight: 700;
 }
 .k2-vpc-hint { align-self: center; color: var(--muted); font-size: 12px; }
+.k2-appliance-options { display: grid; gap: 6px; align-self: center; }
+.k2-appliance-options .k2-checkbox { flex-direction: row; }
+[data-k2-firewall-ravpn-option][hidden] { display: none; }
 .k2-zone-checks {
   display: grid;
   gap: 4px;

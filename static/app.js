@@ -1364,8 +1364,8 @@ function generatorSiteMarkup(index) {
 function k2WorkloadVpcMarkup(name = "VPC INFRA", vmPrefix = 24, tgwPrefix = 28) {
   return `<div class="k2-vpc-row k2-workload-row" data-k2-workload-vpc>
     <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC INFRA"></label>
-    <label>Маска VM<input data-k2-vm-prefix type="number" min="1" max="32" required value="${esc(vmPrefix)}"></label>
-    <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="32" required value="${esc(tgwPrefix)}"></label>
+    <label>Маска VM<input data-k2-vm-prefix type="number" min="1" max="28" required value="${esc(vmPrefix)}"></label>
+    <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="28" required value="${esc(tgwPrefix)}"></label>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
   </div>`;
 }
@@ -1373,7 +1373,7 @@ function k2WorkloadVpcMarkup(name = "VPC INFRA", vmPrefix = 24, tgwPrefix = 28) 
 function k2ApplianceVpcMarkup({
   name = "VPC FW", type = "firewall", scope = "all", cluster = true,
   outsidePrefix, insidePrefix = 28, interlinkPrefix = 28, tgwPrefix = 28,
-  userPrefix = 22
+  userPrefix = 22, ravpnEnabled = false, ravpnPrefix = 24
 } = {}) {
   const resolvedOutsidePrefix = outsidePrefix ?? (type === "firewall" ? 25 : 28);
   const selectedZoneIndices = {
@@ -1395,14 +1395,18 @@ function k2ApplianceVpcMarkup({
         <span data-k2-zone-label>Зона ${index + 1}</span>
       </label>`).join("")}
     </fieldset>
-    <label class="k2-checkbox"><input data-k2-cluster type="checkbox" ${cluster ? "checked" : ""}> Кластер: добавить interlink</label>
+    <div class="k2-appliance-options">
+      <label class="k2-checkbox"><input data-k2-cluster type="checkbox" ${cluster ? "checked" : ""}> Кластер: добавить interlink</label>
+      <label class="k2-checkbox" data-k2-firewall-ravpn-option><input data-k2-firewall-ravpn type="checkbox" ${ravpnEnabled ? "checked" : ""}> Добавить RAVPN</label>
+    </div>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
     <div class="k2-mask-grid">
-      <label>Маска outside<input data-k2-outside-prefix type="number" min="1" max="32" required value="${esc(resolvedOutsidePrefix)}"></label>
-      <label>Маска inside<input data-k2-inside-prefix type="number" min="1" max="32" required value="${esc(insidePrefix)}"></label>
-      <label>Маска interlink<input data-k2-interlink-prefix type="number" min="1" max="32" required value="${esc(interlinkPrefix)}"></label>
-      <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="32" required value="${esc(tgwPrefix)}"></label>
-      <label>Маска пула RA VPN<input data-k2-user-prefix type="number" min="1" max="32" required value="${esc(userPrefix)}"></label>
+      <label>Маска outside<input data-k2-outside-prefix type="number" min="1" max="28" required value="${esc(resolvedOutsidePrefix)}"></label>
+      <label>Маска inside<input data-k2-inside-prefix type="number" min="1" max="28" required value="${esc(insidePrefix)}"></label>
+      <label>Маска interlink<input data-k2-interlink-prefix type="number" min="1" max="28" required value="${esc(interlinkPrefix)}"></label>
+      <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="28" required value="${esc(tgwPrefix)}"></label>
+      <label>Маска пула RA VPN<input data-k2-user-prefix type="number" min="1" max="28" required value="${esc(userPrefix)}"></label>
+      <label>Маска RAVPN Firewall<input data-k2-ravpn-prefix type="number" min="1" max="28" required value="${esc(ravpnPrefix)}"></label>
     </div>
     <fieldset class="k2-zone-checks k2-interlink-zone-checks">
       <legend>Interlink в зонах</legend>
@@ -1417,8 +1421,15 @@ function k2ApplianceVpcMarkup({
 function syncK2ApplianceRow(row) {
   const interlink = row.querySelector("[data-k2-interlink-prefix]");
   interlink.disabled = !row.querySelector("[data-k2-cluster]").checked;
-  row.querySelector("[data-k2-user-prefix]").disabled =
-    row.querySelector("[data-k2-appliance-type]").value !== "ravpn";
+  const applianceType = row.querySelector("[data-k2-appliance-type]").value;
+  row.querySelector("[data-k2-user-prefix]").disabled = applianceType !== "ravpn";
+  const firewallRavpn = row.querySelector("[data-k2-firewall-ravpn]");
+  const firewallRavpnOption = row.querySelector("[data-k2-firewall-ravpn-option]");
+  const isFirewall = applianceType === "firewall";
+  firewallRavpnOption.hidden = !isFirewall;
+  firewallRavpn.disabled = !isFirewall;
+  row.querySelector("[data-k2-ravpn-prefix]").disabled =
+    !isFirewall || !firewallRavpn.checked;
   const cluster = row.querySelector("[data-k2-cluster]").checked;
   const deviceZones = [...row.querySelectorAll("[data-k2-zone-checkbox]")];
   row.querySelectorAll("[data-k2-interlink-zone-checkbox]").forEach((checkbox, index) => {
@@ -1533,6 +1544,9 @@ function k2CloudPayload() {
           .filter(checkbox => checkbox.checked && !checkbox.disabled)
           .map(checkbox => Number(checkbox.value)),
         cluster: row.querySelector("[data-k2-cluster]").checked,
+        ravpn_enabled: row.querySelector("[data-k2-firewall-ravpn]").checked &&
+          !row.querySelector("[data-k2-firewall-ravpn]").disabled,
+        ravpn_prefix: row.querySelector("[data-k2-ravpn-prefix]").value,
         outside_prefix: row.querySelector("[data-k2-outside-prefix]").value,
         inside_prefix: row.querySelector("[data-k2-inside-prefix]").value,
         interlink_prefix: row.querySelector("[data-k2-interlink-prefix]").value,
@@ -1590,8 +1604,8 @@ function openGeneratorDialog() {
   $("k2Supernet").value = "";
   $("k2ZoneCount").value = "2";
   $("k2PrimaryZone").value = "COMP";
-  $("k2SecondaryZone").value = "VOL";
-  $("k2TertiaryZone").value = "AZ3";
+  $("k2SecondaryZone").value = "VOL51";
+  $("k2TertiaryZone").value = "VOL52";
   $("k2IncludeTransit").checked = true;
   $("k2TransitVpcName").value = "VPC TRANSIT";
   $("k2TransitPrefix").value = "24";
@@ -2267,7 +2281,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     if (event.target === $("k2ZoneCount")) syncK2ZoneCount();
     const applianceRow = event.target.closest("[data-k2-appliance-vpc]");
     if (applianceRow && event.target.matches(
-      "[data-k2-cluster], [data-k2-zone-checkbox]"
+      "[data-k2-cluster], [data-k2-zone-checkbox], [data-k2-firewall-ravpn]"
     )) {
       syncK2ApplianceRow(applianceRow);
     }
