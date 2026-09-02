@@ -7,11 +7,14 @@ from project_store import ProjectStore
 
 
 def register(client, name: str = "Тестовый пользователь") -> tuple[dict, dict[str, str]]:
-    data = client.post("/api/users", json={"name": name}).get_json()["data"]
+    data = client.post(
+        "/api/auth/register",
+        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+    ).get_json()["data"]
     return data, {"X-User-Token": data["access_token"]}
 
 
-def test_project_requires_pin_and_permanent_token_survives_store_restart(tmp_path):
+def test_project_membership_survives_store_restart(tmp_path):
     data_root = tmp_path / "data"
     store = ProjectStore(data_root)
     app = create_app(store)
@@ -39,28 +42,31 @@ def test_project_requires_pin_and_permanent_token_survives_store_restart(tmp_pat
             "revision": 0,
             "pin_set": True,
             "can_delete": True,
+            "access_level": "owner",
+            "can_manage_access": True,
+            "can_manage_project": True,
         }
     ]
 
-    assert client.get("/api/state", headers={"X-Project-ID": project_id}).status_code == 403
+    assert client.get("/api/state", headers={"X-Project-ID": project_id}).status_code == 401
     assert client.get(
         "/api/state",
         headers={"X-Project-ID": project_id, "X-Project-Token": "wrong"},
-    ).status_code == 403
+    ).status_code == 401
     assert client.get(
         "/api/state",
-        headers={"X-Project-ID": project_id, "X-Project-Token": token},
+        headers={**user_headers, "X-Project-ID": project_id},
     ).status_code == 200
 
     restarted_app = create_app(ProjectStore(data_root))
     restarted_client = restarted_app.test_client()
     assert restarted_client.get(
         "/api/state",
-        headers={"X-Project-ID": project_id, "X-Project-Token": token},
+        headers={**user_headers, "X-Project-ID": project_id},
     ).status_code == 200
 
 
-def test_unlock_rejects_wrong_pin_and_returns_another_permanent_token(tmp_path):
+def test_unlock_is_not_available_for_new_owned_projects(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()
     user, user_headers = register(client)
@@ -77,11 +83,10 @@ def test_unlock_rejects_wrong_pin_and_returns_another_permanent_token(tmp_path):
     unlocked = client.post(
         f"/api/projects/{project_id}/unlock", json={"pin": "9876"}, headers=user_headers
     )
-    assert unlocked.status_code == 200
-    token = unlocked.get_json()["data"]["access_token"]
+    assert unlocked.status_code == 403
     assert client.get(
         "/api/state",
-        headers={"X-Project-ID": project_id, "X-Project-Token": token},
+        headers={**user_headers, "X-Project-ID": project_id},
     ).status_code == 200
 
 
@@ -149,20 +154,20 @@ def test_administrator_can_set_pin_for_legacy_project_on_server(tmp_path):
     ).status_code == 200
 
 
-def test_first_authenticated_reader_claims_existing_project_with_saved_token(tmp_path):
+def test_first_authenticated_user_claims_existing_project_with_legacy_pin(tmp_path):
     store = ProjectStore(tmp_path / "data")
-    project, project_token = store.create_project("Existing", "1234")
+    project, _project_token = store.create_project("Existing", "1234")
     client = create_app(store).test_client()
     user, user_headers = register(client, "Старый владелец")
 
-    response = client.get(
-        "/api/state",
-        headers={
-            **user_headers,
-            "X-Project-ID": project["id"],
-            "X-Project-Token": project_token,
-        },
+    unlocked = client.post(
+        f"/api/projects/{project['id']}/unlock",
+        json={"pin": "1234"},
+        headers=user_headers,
     )
-
+    assert unlocked.status_code == 200
+    response = client.get(
+        "/api/state", headers={**user_headers, "X-Project-ID": project["id"]}
+    )
     assert response.status_code == 200
     assert store.is_creator(project["id"], user["user"]["id"])

@@ -4,14 +4,9 @@ const userTokenStorageKey = "ipPlanManager.userToken";
 let userToken = localStorage.getItem(userTokenStorageKey) || "";
 let currentUser = null;
 let userDialogResolve = null;
+let authDialogMode = "login";
+let pendingInviteToken = new URLSearchParams(window.location.search).get("invite") || "";
 let currentProjectId = localStorage.getItem("ipPlanManager.projectId") || "";
-const projectTokensStorageKey = "ipPlanManager.projectTokens";
-let projectTokens = {};
-try {
-  projectTokens = JSON.parse(localStorage.getItem(projectTokensStorageKey) || "{}") || {};
-} catch (_) {
-  projectTokens = {};
-}
 let projectRevision = null;
 let pendingRemoteRevision = null;
 let projectDialogMode = "create";
@@ -26,21 +21,8 @@ const collapsed = new Set();
 
 const $ = (id) => document.getElementById(id);
 
-function saveProjectTokens() {
-  localStorage.setItem(projectTokensStorageKey, JSON.stringify(projectTokens));
-}
-
-function currentProjectToken() {
-  return projectTokens[currentProjectId] || "";
-}
-
-function forgetProjectToken(projectId) {
-  delete projectTokens[projectId];
-  saveProjectTokens();
-}
-
 function requestNeedsProjectAccess(url) {
-  return !url.startsWith("/api/users") && url !== "/api/projects" && !url.endsWith("/unlock");
+  return !url.startsWith("/api/auth") && url !== "/api/projects" && !url.startsWith("/api/invitations/");
 }
 
 function isMutation(options = {}) {
@@ -58,9 +40,6 @@ async function api(url, options = {}) {
 
   if (currentProjectId && requestNeedsProjectAccess(url)) {
     headers.set("X-Project-ID", currentProjectId);
-    if (currentProjectToken()) {
-      headers.set("X-Project-Token", currentProjectToken());
-    }
     if (isMutation(options) && projectRevision !== null) {
       headers.set("X-Project-Revision", String(projectRevision));
     }
@@ -78,13 +57,7 @@ async function api(url, options = {}) {
       currentUser = null;
       localStorage.removeItem(userTokenStorageKey);
     }
-    if (
-      res.status === 403 &&
-      currentProjectId &&
-      /(?:Нет доступа к проекту|Требуется PIN проекта)/.test(body?.error || "")
-    ) {
-      forgetProjectToken(currentProjectId);
-    }
+
     if (res.status === 409) {
       // Keep our old revision. This is important: a stale editor must not be
       // allowed to retry with the new revision and overwrite a colleague's data.
@@ -141,25 +114,47 @@ function toggleHeaderMenu() {
   $("headerMenuBtn").setAttribute("aria-expanded", String(opening));
 }
 
-function openUserDialog() {
-  const editing = !!currentUser;
-  $("userDialogTitle").textContent = editing ? "Изменить имя" : "Как вас зовут?";
-  $("userDialogHint").textContent = editing
-    ? "Новое имя будет указано в следующих событиях журнала."
-    : "Имя будет отображаться в журнале изменений.";
+function setAuthDialogMode(mode) {
+  authDialogMode = mode;
+  const profile = mode === "profile";
+  const registering = mode === "register";
+  $("authModeButtons").hidden = profile;
+  $("userNameField").hidden = mode === "login";
+  $("userLoginField").hidden = profile;
+  $("userPasswordField").hidden = profile;
+  $("userName").required = registering || profile;
+  $("userLogin").required = !profile;
+  $("userPassword").required = !profile;
+  $("logoutBtn").hidden = !profile;
+  $("closeUserDialogBtn").hidden = !currentUser;
+  $("userDialogTitle").textContent = profile ? "Профиль" : registering ? "Регистрация" : "Вход";
+  $("userDialogHint").textContent = profile
+    ? `Корпоративный логин: ${currentUser?.login || "—"}`
+    : registering
+      ? "Используйте реальное имя и корпоративный логин."
+      : "Введите корпоративный логин и пароль.";
+  $("userSubmitBtn").textContent = profile ? "Сохранить имя" : registering ? "Зарегистрироваться" : "Войти";
+  $("loginModeBtn").classList.toggle("primary", mode === "login");
+  $("registerModeBtn").classList.toggle("primary", registering);
+}
+
+function openUserDialog(mode = currentUser ? "profile" : "login") {
+  setAuthDialogMode(mode);
   $("userName").value = currentUser?.name || "";
-  $("closeUserDialogBtn").hidden = !editing;
+  if (!currentUser) $("userPassword").value = "";
   if (!$("userDialog").open) $("userDialog").showModal();
-  $("userName").focus();
+  $(mode === "login" ? "userLogin" : "userName").focus();
 }
 
 async function saveUserProfile(event) {
   event.preventDefault();
+  const wasAuthenticating = authDialogMode !== "profile";
   const name = $("userName").value.trim();
-  if (!name) return;
+  const login = $("userLogin").value.trim();
+  const password = $("userPassword").value;
 
   try {
-    if (currentUser) {
+    if (authDialogMode === "profile") {
       currentUser = await api("/api/users/me", {
         method: "PUT",
         headers: {"Content-Type": "application/json"},
@@ -167,25 +162,34 @@ async function saveUserProfile(event) {
       });
       toast("Имя изменено");
     } else {
-      const result = await api("/api/users", {
+      const endpoint = authDialogMode === "register" ? "/api/auth/register" : "/api/auth/login";
+      const payload = authDialogMode === "register" ? {name, login, password} : {login, password};
+      const result = await api(endpoint, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({name})
+        body: JSON.stringify(payload)
       });
       currentUser = result.user;
       userToken = result.access_token;
       localStorage.setItem(userTokenStorageKey, userToken);
-      toast("Профиль создан");
+      toast(authDialogMode === "register" ? "Регистрация завершена" : "Вход выполнен");
     }
     updateUserControls();
     $("userDialog").close();
     if (userDialogResolve) {
       userDialogResolve();
       userDialogResolve = null;
+    } else if (wasAuthenticating) {
+      await loadProjects();
+      render();
+      if (pendingInviteToken && !$("inviteDialog").open) {
+        $("invitePIN").value = "";
+        $("inviteDialog").showModal();
+      }
     }
   } catch (error) {
     toast(error.message, true);
-    if (error.status === 401) openUserDialog();
+    if (error.status === 401) openUserDialog("login");
   }
 }
 
@@ -194,6 +198,12 @@ async function ensureUserProfile() {
     try {
       currentUser = await api("/api/users/me");
       updateUserControls();
+      if (!currentUser.login) {
+        await new Promise(resolve => {
+          userDialogResolve = resolve;
+          openUserDialog("register");
+        });
+      }
       return;
     } catch (error) {
       if (error.status !== 401) throw error;
@@ -202,8 +212,41 @@ async function ensureUserProfile() {
 
   await new Promise(resolve => {
     userDialogResolve = resolve;
-    openUserDialog();
+    openUserDialog("login");
   });
+}
+
+function logoutUser() {
+  userToken = "";
+  currentUser = null;
+  projects = [];
+  currentProjectId = "";
+  state = null;
+  localStorage.removeItem(userTokenStorageKey);
+  localStorage.removeItem("ipPlanManager.projectId");
+  $("userDialog").close();
+  updateUserControls();
+  render();
+  openUserDialog("login");
+}
+
+async function migrateLegacyProjectAccess() {
+  const storageKey = "ipPlanManager.projectTokens";
+  const raw = localStorage.getItem(storageKey);
+  if (!raw) return;
+  try {
+    const tokens = JSON.parse(raw);
+    if (tokens && typeof tokens === "object" && !Array.isArray(tokens)) {
+      await api("/api/migrations/legacy-project-access", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({tokens})
+      });
+    }
+    localStorage.removeItem(storageKey);
+  } catch (_) {
+    // Keep the old tokens so a temporary server error can be retried next time.
+  }
 }
 
 function currentProject() {
@@ -220,11 +263,6 @@ function updateSyncStatus(message = "") {
     return;
   }
 
-  if (!currentProjectToken()) {
-    el.textContent = "Требуется PIN";
-    el.className = "sync-status pending";
-    return;
-  }
 
   if (message) {
     el.textContent = message;
@@ -290,30 +328,31 @@ async function loadProjects(preferredId = null) {
 
 function updateProjectControls() {
   const hasProject = !!currentProjectId;
-  const hasAccess = hasProject && !!currentProjectToken();
+  const hasAccess = hasProject;
   const project = currentProject();
 
-  $("renameProjectBtn").disabled = !hasAccess || !project?.can_delete;
-  $("renameProjectBtn").title = hasAccess && !project?.can_delete
-    ? "Переименовать проект может только его создатель"
+  $("renameProjectBtn").disabled = !hasAccess || !project?.can_manage_project;
+  $("renameProjectBtn").title = hasAccess && !project?.can_manage_project
+    ? "Переименование доступно владельцу и пользователям с полным доступом"
     : "";
   $("deleteProjectBtn").disabled = !hasAccess || !project?.can_delete;
   $("deleteProjectBtn").title = hasAccess && !project?.can_delete
     ? "Удалить проект может только его создатель"
     : "";
   $("auditBtn").disabled = !currentUser;
+  $("manageAccessBtn").disabled = !hasAccess || !project?.can_manage_access;
   $("addSiteBtn").disabled = !hasAccess;
   $("generatePlanBtn").disabled = !hasAccess;
   $("undoBtn").disabled = !hasAccess;
   $("collapseAllBtn").disabled = !hasAccess;
-  $("backupsBtn").disabled = !hasAccess || !project?.can_delete;
-  $("backupsBtn").title = hasAccess && !project?.can_delete
-    ? "Резервными копиями может управлять только владелец проекта"
+  $("backupsBtn").disabled = !hasAccess || !project?.can_manage_project;
+  $("backupsBtn").title = hasAccess && !project?.can_manage_project
+    ? "Резервные копии доступны владельцу и пользователям с полным доступом"
     : "";
-  const canImport = hasAccess && !!project?.can_delete;
+  const canImport = hasAccess && !!project?.can_manage_project;
   $("importLabel").classList.toggle("disabled", !canImport);
-  $("importLabel").title = hasAccess && !project?.can_delete
-    ? "Импортировать Excel может только создатель проекта"
+  $("importLabel").title = hasAccess && !project?.can_manage_project
+    ? "Импорт доступен владельцу и пользователям с полным доступом"
     : "";
 
   if (!hasAccess) {
@@ -374,8 +413,6 @@ async function saveProject(e) {
         body: JSON.stringify({name, pin: $("projectPIN").value.trim()})
       });
       const project = created.project;
-      projectTokens[project.id] = created.access_token;
-      saveProjectTokens();
       $("projectDialog").close();
       await loadProjects(project.id);
       await openProject(project.id);
@@ -386,39 +423,25 @@ async function saveProject(e) {
   }
 }
 
-function showUnlockDialog() {
-  const project = currentProject();
-  if (!project) return;
-  $("unlockDialogTitle").textContent = `Открыть проект · ${project.name}`;
-  $("unlockDialogDescription").textContent = project.pin_set
-    ? "PIN потребуется только один раз в этом браузере."
-    : "У проекта нет настроенного PIN. PIN по умолчанию: 1111";
-  $("unlockPIN").value = "";
-  $("unlockPIN").disabled = false;
-  $("unlockSubmitBtn").disabled = false;
-  if (!$("unlockDialog").open) $("unlockDialog").showModal();
-  $("unlockPIN").focus();
-}
-
-async function unlockProject(e) {
+async function acceptProjectInvitation(e) {
   e.preventDefault();
-  if (!currentProjectId) return;
+  if (!pendingInviteToken) return;
   try {
-    const result = await api(`/api/projects/${currentProjectId}/unlock`, {
+    const result = await api(`/api/invitations/${encodeURIComponent(pendingInviteToken)}/accept`, {
       method: "POST",
       headers: {"Content-Type":"application/json"},
-      body: JSON.stringify({pin: $("unlockPIN").value.trim()})
+      body: JSON.stringify({pin: $("invitePIN").value.trim()})
     });
-    projectTokens[currentProjectId] = result.access_token;
-    saveProjectTokens();
-    $("unlockDialog").close();
-    await loadProjects(currentProjectId);
-    await refresh();
+    pendingInviteToken = "";
+    history.replaceState(null, "", window.location.pathname);
+    $("inviteDialog").close();
+    await loadProjects(result.id);
+    await openProject(result.id);
     collapseAllSubnets();
-    toast("Проект открыт. Доступ сохранен в этом браузере.");
+    toast("Проект добавлен в личный кабинет");
   } catch (err) {
     toast(err.message, true);
-    $("unlockPIN").select();
+    $("invitePIN").select();
   }
 }
 
@@ -442,27 +465,104 @@ async function openProject(projectId) {
   $("projectSelect").value = projectId;
   collapsed.clear();
   updateProjectControls();
-  if (!currentProjectToken()) {
-    state = null;
-    render();
-    showUnlockDialog();
-    return;
-  }
+  await refresh();
+  collapseAllSubnets();
+  await loadProjects(currentProjectId);
+}
+
+async function createInviteLink() {
+  if (!currentProjectId) return;
   try {
-    await refresh();
-    collapseAllSubnets();
-    if (!currentProject()?.can_delete) {
-      await loadProjects(currentProjectId);
+    const result = await api(`/api/projects/${currentProjectId}/invite`, {method: "POST"});
+    const url = new URL(window.location.href);
+    url.search = "";
+    url.hash = "";
+    url.searchParams.set("invite", result.token);
+    $("inviteLinkResult").hidden = false;
+    $("inviteLinkResult").textContent = url.toString();
+    try {
+      await navigator.clipboard.writeText(url.toString());
+      toast("Ссылка скопирована. Передайте коллеге ссылку и PIN отдельно.");
+    } catch (_) {
+      toast("Ссылка создана — скопируйте её из окна доступа");
     }
-  } catch (err) {
-    if (!currentProjectToken()) {
-      state = null;
-      render();
-      showUnlockDialog();
-      return;
+  } catch (error) { toast(error.message, true); }
+}
+
+async function updateMemberAccess(userId, accessLevel) {
+  try {
+    await api(`/api/projects/${currentProjectId}/members/${encodeURIComponent(userId)}`, {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({access_level: accessLevel})
+    });
+    toast("Уровень доступа изменён");
+    await loadProjectMembers();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function revokeMemberAccess(userId, name) {
+  if (!confirm(`Закрыть пользователю «${name}» доступ к проекту?`)) return;
+  try {
+    await api(`/api/projects/${currentProjectId}/members/${encodeURIComponent(userId)}`, {
+      method: "DELETE"
+    });
+    toast("Доступ отозван");
+    await loadProjectMembers();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function loadProjectMembers() {
+  const list = $("membersList");
+  list.innerHTML = '<div class="empty-card">Загрузка…</div>';
+  try {
+    const members = await api(`/api/projects/${currentProjectId}/members`);
+    list.innerHTML = "";
+    for (const member of members) {
+      const row = document.createElement("div");
+      row.className = "member-row";
+      const identity = document.createElement("div");
+      identity.className = "member-identity";
+      const name = document.createElement("strong");
+      name.textContent = member.name;
+      const login = document.createElement("small");
+      login.textContent = member.login || "";
+      identity.append(name, login);
+
+      if (member.access_level === "owner") {
+        const badge = document.createElement("span");
+        badge.className = "access-badge";
+        badge.textContent = "Владелец";
+        row.append(identity, badge);
+      } else {
+        const select = document.createElement("select");
+        select.className = "member-access-select";
+        select.innerHTML = '<option value="reduced">Сокращённый</option><option value="full">Полный</option>';
+        select.value = member.access_level;
+        select.onchange = () => updateMemberAccess(member.id, select.value);
+        const remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn tiny danger";
+        remove.textContent = "Отозвать";
+        remove.onclick = () => revokeMemberAccess(member.id, member.name);
+        row.append(identity, select, remove);
+      }
+      list.appendChild(row);
     }
-    throw err;
+  } catch (error) {
+    list.innerHTML = "";
+    const message = document.createElement("div");
+    message.className = "empty-card";
+    message.textContent = error.message;
+    list.appendChild(message);
   }
+}
+
+async function openAccessDialog() {
+  closeHeaderMenu();
+  $("inviteLinkResult").hidden = true;
+  $("accessDialog").showModal();
+  await loadProjectMembers();
 }
 
 async function deleteCurrentProject() {
@@ -477,7 +577,6 @@ async function deleteCurrentProject() {
 
   try {
     await api(`/api/projects/${project.id}`, {method:"DELETE"});
-    forgetProjectToken(project.id);
     state = null;
     currentProjectId = "";
     projectRevision = null;
@@ -492,23 +591,23 @@ async function deleteCurrentProject() {
 }
 
 async function pollProjectRevision() {
-  if (!currentProjectId || !currentProjectToken() || document.hidden) return;
+  if (!currentProjectId || document.hidden) return;
 
   try {
     const res = await fetch(`/api/projects/${encodeURIComponent(currentProjectId)}/revision`, {
       cache: "no-store",
       headers: {
         "X-Project-ID": currentProjectId,
-        "X-Project-Token": currentProjectToken(),
         "X-User-Token": userToken
       }
     });
     const body = await res.json();
     if (res.status === 403) {
-      forgetProjectToken(currentProjectId);
+      currentProjectId = "";
       state = null;
+      localStorage.removeItem("ipPlanManager.projectId");
+      await loadProjects();
       render();
-      showUnlockDialog();
       return;
     }
     if (res.status === 404) {
@@ -741,7 +840,7 @@ function renderAuditLog(events) {
 }
 
 async function loadAuditLog() {
-  if (!currentProjectId || !currentProjectToken()) {
+  if (!currentProjectId) {
     try {
       renderAuditLog(await api("/api/system-audit"));
     } catch (error) {
@@ -801,21 +900,6 @@ function render() {
     return;
   }
 
-  if (!currentProjectToken()) {
-    const project = currentProject();
-    $("sourceName").textContent = project?.name || "Проект закрыт";
-    updateProjectControls();
-    sitesEl.innerHTML = `
-      <div class="empty-card project-start">
-        <strong>Требуется PIN проекта</strong>
-        <div style="margin-top:8px">После первого ввода доступ сохранится в этом браузере.</div>
-        <div class="empty-start-actions">
-          <button class="btn primary" id="emptyUnlockProjectBtn">Ввести PIN</button>
-        </div>
-      </div>`;
-    $("emptyUnlockProjectBtn").onclick = showUnlockDialog;
-    return;
-  }
 
   const projectName = state?.project?.name || currentProject()?.name || "Проект";
   $("sourceName").textContent = state?.source_filename
@@ -833,7 +917,7 @@ function render() {
         <div style="margin-top:8px">Можно начать с нуля, создав первую площадку, или импортировать существующий Excel.</div>
         <div class="empty-start-actions">
           <button class="btn primary" id="emptyAddSiteBtn">+ Создать площадку</button>
-          ${currentProject()?.can_delete ? `<label class="btn secondary">
+          ${currentProject()?.can_manage_project ? `<label class="btn secondary">
             Импорт Excel
             <input id="emptyFileInput" type="file" accept=".xlsx,.xlsm" hidden>
           </label>` : ""}
@@ -2002,12 +2086,11 @@ async function importExcel(file) {
 }
 
 async function exportExcel() {
-  if (!currentProjectId || !currentProjectToken()) return;
+  if (!currentProjectId) return;
   try {
     const response = await fetch("/api/export", {
       headers: {
         "X-Project-ID": currentProjectId,
-        "X-Project-Token": currentProjectToken(),
         "X-User-Token": userToken
       }
     });
@@ -2057,7 +2140,7 @@ async function downloadEmptyTemplate() {
 }
 
 async function undoOwnChange() {
-  if (!currentProjectId || !currentProjectToken()) return;
+  if (!currentProjectId) return;
   try {
     await api("/api/undo", {method: "POST"});
     toast("Ваше изменение отменено");
@@ -2108,7 +2191,7 @@ async function loadBackups() {
 
 async function openBackupsDialog() {
   closeHeaderMenu();
-  if (!currentProject()?.can_delete) return;
+  if (!currentProject()?.can_manage_project) return;
   $("backupsList").innerHTML = '<div class="empty-card">Загрузка…</div>';
   $("backupsDialog").showModal();
   try { await loadBackups(); } catch (error) { toast(error.message, true); }
@@ -2170,6 +2253,9 @@ document.addEventListener("DOMContentLoaded", async () => {
   });
 
   $("userForm").onsubmit = saveUserProfile;
+  $("loginModeBtn").onclick = () => setAuthDialogMode("login");
+  $("registerModeBtn").onclick = () => setAuthDialogMode("register");
+  $("logoutBtn").onclick = logoutUser;
   $("userProfileBtn").onclick = () => {
     closeHeaderMenu();
     openUserDialog();
@@ -2186,6 +2272,8 @@ document.addEventListener("DOMContentLoaded", async () => {
     closeHeaderMenu();
     await openAuditPanel();
   };
+  $("manageAccessBtn").onclick = openAccessDialog;
+  $("createInviteBtn").onclick = createInviteLink;
   $("closeAuditBtn").onclick = closeAuditPanel;
   $("collapseAllBtn").onclick = collapseAllSubnets;
   $("undoBtn").onclick = undoOwnChange;
@@ -2202,7 +2290,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("backupsBtn").onclick = openBackupsDialog;
   $("createBackupBtn").onclick = createProjectBackup;
   $("projectForm").onsubmit = saveProject;
-  $("unlockForm").onsubmit = unlockProject;
+  $("inviteForm").onsubmit = acceptProjectInvitation;
   $("projectSelect").onchange = async e => {
     try {
       await openProject(e.target.value);
@@ -2353,6 +2441,12 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   try {
     await ensureUserProfile();
+    await migrateLegacyProjectAccess();
+    if (pendingInviteToken) {
+      $("invitePIN").value = "";
+      $("inviteDialog").showModal();
+      $("invitePIN").focus();
+    }
     const remembered = currentProjectId;
     await loadProjects(remembered);
 

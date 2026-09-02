@@ -7,7 +7,24 @@ from project_store import ProjectStore
 
 
 def register(client, name: str) -> dict:
-    return client.post("/api/users", json={"name": name}).get_json()["data"]
+    return client.post(
+        "/api/auth/register",
+        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+    ).get_json()["data"]
+
+
+def share_project(client, project_id: str, pin: str, owner: dict, colleague: dict) -> str:
+    invite = client.post(
+        f"/api/projects/{project_id}/invite",
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]["token"]
+    accepted = client.post(
+        f"/api/invitations/{invite}/accept",
+        json={"pin": pin},
+        headers={"X-User-Token": colleague["access_token"]},
+    )
+    assert accepted.status_code == 200
+    return ""
 
 
 def project_headers(user: dict, project_id: str, project_token: str, revision=None):
@@ -33,11 +50,7 @@ def test_user_undo_reverts_own_update_without_reverting_colleague(tmp_path):
     ).get_json()["data"]
     project_id = created["project"]["id"]
     owner_token = created["access_token"]
-    colleague_token = client.post(
-        f"/api/projects/{project_id}/unlock",
-        json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, project_id, "1234", owner, colleague)
 
     first = client.post(
         "/api/sites",
@@ -81,10 +94,7 @@ def test_user_undo_refuses_to_overwrite_later_colleague_edit(tmp_path):
         headers={"X-User-Token": owner["access_token"]},
     ).get_json()["data"]
     pid = created["project"]["id"]
-    colleague_token = client.post(
-        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, pid, "1234", owner, colleague)
     site = client.post(
         "/api/sites", json={"name": "A", "cidr": "10.0.0.0/16"},
         headers=project_headers(owner, pid, created["access_token"], 0),
@@ -144,10 +154,7 @@ def test_user_can_undo_own_deletion_of_colleague_host_and_subnet(tmp_path):
     ).get_json()["data"]
     pid = created["project"]["id"]
     owner_token = created["access_token"]
-    colleague_token = client.post(
-        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, pid, "1234", owner, colleague)
     site = client.post(
         "/api/sites", json={"name": "Площадка", "cidr": "10.0.0.0/16"},
         headers=project_headers(owner, pid, owner_token, 0),
@@ -254,10 +261,7 @@ def test_owner_can_undo_selected_colleague_change(tmp_path):
         headers={"X-User-Token": owner["access_token"]},
     ).get_json()["data"]
     pid = created["project"]["id"]
-    colleague_token = client.post(
-        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, pid, "1234", owner, colleague)
     made = client.post(
         "/api/sites", json={"name": "Коллеги", "cidr": "10.20.0.0/16"},
         headers=project_headers(colleague, pid, colleague_token, 0),
@@ -304,10 +308,7 @@ def test_colleague_cannot_use_owner_undo_endpoint(tmp_path):
         headers={"X-User-Token": owner["access_token"]},
     ).get_json()["data"]
     pid = created["project"]["id"]
-    colleague_token = client.post(
-        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, pid, "1234", owner, colleague)
     made = client.post(
         "/api/sites", json={"name": "Коллеги", "cidr": "10.20.0.0/16"},
         headers=project_headers(colleague, pid, colleague_token, 0),
@@ -337,10 +338,7 @@ def test_only_owner_can_create_and_restore_project_backup(tmp_path):
         headers={"X-User-Token": owner["access_token"]},
     ).get_json()["data"]
     pid = created["project"]["id"]
-    colleague_token = client.post(
-        f"/api/projects/{pid}/unlock", json={"pin": "1234"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]["access_token"]
+    colleague_token = share_project(client, pid, "1234", owner, colleague)
 
     denied = client.post(
         f"/api/projects/{pid}/backups",

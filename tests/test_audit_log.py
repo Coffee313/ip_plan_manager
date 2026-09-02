@@ -5,7 +5,24 @@ from project_store import ProjectStore
 
 
 def register(client, name: str) -> dict:
-    return client.post("/api/users", json={"name": name}).get_json()["data"]
+    return client.post(
+        "/api/auth/register",
+        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+    ).get_json()["data"]
+
+
+def share_project(client, project_id: str, pin: str, owner: dict, colleague: dict) -> dict:
+    invite = client.post(
+        f"/api/projects/{project_id}/invite",
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]["token"]
+    accepted = client.post(
+        f"/api/invitations/{invite}/accept",
+        json={"pin": pin},
+        headers={"X-User-Token": colleague["access_token"]},
+    )
+    assert accepted.status_code == 200
+    return {"access_token": ""}
 
 
 def test_every_successful_change_is_visible_with_actor_and_row_link(tmp_path):
@@ -107,11 +124,7 @@ def test_audit_log_is_available_to_another_user_with_project_access(tmp_path):
         headers={"X-User-Token": owner["access_token"]},
     ).get_json()["data"]
     project_id = created["project"]["id"]
-    unlocked = client.post(
-        f"/api/projects/{project_id}/unlock",
-        json={"pin": "4321"},
-        headers={"X-User-Token": colleague["access_token"]},
-    ).get_json()["data"]
+    unlocked = share_project(client, project_id, "4321", owner, colleague)
 
     response = client.get(
         "/api/audit",

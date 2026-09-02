@@ -94,7 +94,7 @@ def test_restore_replaces_projects_only_after_full_validation(tmp_path):
 
 def test_backup_restore_preserves_users_and_project_ownership(tmp_path):
     source = ProjectStore(tmp_path / "source")
-    user, user_token = source.create_user("Владелец")
+    user, user_token = source.create_user("Владелец", "owner", "TestPassword123")
     project, _ = source.create_project(
         "Owned", "1234", user["id"], user["name"]
     )
@@ -109,7 +109,7 @@ def test_backup_restore_preserves_users_and_project_ownership(tmp_path):
 
 def test_restore_rejects_users_file_with_wrong_manifest_checksum(tmp_path):
     source = ProjectStore(tmp_path / "source")
-    source.create_user("Исходный пользователь")
+    source.create_user("Исходный пользователь", "source.user", "TestPassword123")
     backup_path = create_backup(store=source)
     tampered = tmp_path / "tampered-users.zip"
 
@@ -192,7 +192,9 @@ def test_restore_accepts_legacy_v15_manifest(tmp_path):
                 archive.write(path, f"projects/{project['id']}/{path.name}")
 
     target = ProjectStore(tmp_path / "target")
-    _, current_user_token = target.create_user("Текущий пользователь")
+    _, current_user_token = target.create_user(
+        "Текущий пользователь", "current.user", "TestPassword123"
+    )
     assert restore_backup(legacy, target) == 1
     assert project_names(target) == ["Legacy"]
     with pytest.raises(UserAccessDenied, match="Профиль пользователя не найден"):

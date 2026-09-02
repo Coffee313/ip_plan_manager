@@ -9,13 +9,30 @@ from project_store import ProjectStore
 
 
 def register(client, name: str) -> dict:
-    response = client.post("/api/users", json={"name": name})
+    response = client.post(
+        "/api/auth/register",
+        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+    )
     assert response.status_code == 200
     return response.get_json()["data"]
 
 
 def user_headers(token: str) -> dict[str, str]:
     return {"X-User-Token": token}
+
+
+def share_project(client, project_id: str, pin: str, owner: dict, colleague: dict) -> dict:
+    invite = client.post(
+        f"/api/projects/{project_id}/invite",
+        headers=user_headers(owner["access_token"]),
+    ).get_json()["data"]["token"]
+    accepted = client.post(
+        f"/api/invitations/{invite}/accept",
+        json={"pin": pin},
+        headers=user_headers(colleague["access_token"]),
+    )
+    assert accepted.status_code == 200
+    return {"access_token": ""}
 
 
 def workbook_bytes() -> bytes:
@@ -75,13 +92,9 @@ def test_only_creator_can_delete_project(tmp_path):
         "/api/projects", headers=user_headers(colleague["access_token"])
     ).get_json()["data"]
     assert owner_list[0]["can_delete"] is True
-    assert colleague_list[0]["can_delete"] is False
+    assert colleague_list == []
 
-    unlocked = client.post(
-        f"/api/projects/{project_id}/unlock",
-        json={"pin": "1234"},
-        headers=user_headers(colleague["access_token"]),
-    ).get_json()["data"]
+    unlocked = share_project(client, project_id, "1234", owner, colleague)
     colleague_headers = {
         "X-User-Token": colleague["access_token"],
         "X-Project-Token": unlocked["access_token"],
@@ -116,10 +129,7 @@ def test_only_creator_can_rename_project(tmp_path):
         headers=user_headers(owner["access_token"]),
     ).get_json()["data"]
     project_id = created["project"]["id"]
-    unlocked = client.post(
-        f"/api/projects/{project_id}/unlock", json={"pin": "1234"},
-        headers=user_headers(colleague["access_token"]),
-    ).get_json()["data"]
+    unlocked = share_project(client, project_id, "1234", owner, colleague)
 
     denied = client.put(
         f"/api/projects/{project_id}", json={"name": "Имя коллеги"},
@@ -150,10 +160,7 @@ def test_only_creator_can_import_excel(tmp_path):
         headers=user_headers(owner["access_token"]),
     ).get_json()["data"]
     project_id = created["project"]["id"]
-    unlocked = client.post(
-        f"/api/projects/{project_id}/unlock", json={"pin": "1234"},
-        headers=user_headers(colleague["access_token"]),
-    ).get_json()["data"]
+    unlocked = share_project(client, project_id, "1234", owner, colleague)
 
     denied = client.post(
         "/api/import",

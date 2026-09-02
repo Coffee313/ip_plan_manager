@@ -54,6 +54,26 @@ def validate_user_name(name: str) -> str:
     return value
 
 
+def validate_login(login: str) -> str:
+    value = str(login or "").strip().casefold()
+    if not value:
+        raise ValueError("Укажите корпоративный логин")
+    if len(value) > 80:
+        raise ValueError("Корпоративный логин слишком длинный")
+    if not all(char.isascii() and (char.isalnum() or char in "._@-") for char in value):
+        raise ValueError("Логин может содержать латинские буквы, цифры и символы . _ @ -")
+    return value
+
+
+def validate_password(password: str) -> str:
+    value = str(password or "")
+    if len(value) < 10:
+        raise ValueError("Пароль должен содержать не менее 10 символов")
+    if len(value) > 256:
+        raise ValueError("Пароль слишком длинный")
+    return value
+
+
 def validate_pin(pin: str) -> str:
     value = str(pin or "")
     if len(value) != 4 or not value.isascii() or not value.isdigit():
@@ -81,6 +101,48 @@ def hash_pin(pin: str, salt: bytes | None = None) -> str:
             base64.urlsafe_b64encode(digest).decode("ascii"),
         ]
     )
+
+
+def hash_password(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(
+        validate_password(password).encode("utf-8"),
+        salt=salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    )
+    return "$".join(
+        [
+            "scrypt",
+            "16384",
+            "8",
+            "1",
+            base64.urlsafe_b64encode(salt).decode("ascii"),
+            base64.urlsafe_b64encode(digest).decode("ascii"),
+        ]
+    )
+
+
+def verify_password(password: str, encoded: str) -> bool:
+    try:
+        algorithm, n, r, p, salt_text, digest_text = encoded.split("$", 5)
+        if algorithm != "scrypt":
+            return False
+        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
+        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
+        actual = hashlib.scrypt(
+            str(password or "").encode("utf-8"),
+            salt=salt,
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(expected),
+        )
+        return hmac.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
 
 
 def verify_pin(pin: str, encoded: str) -> bool:
@@ -152,26 +214,78 @@ class ProjectStore:
         return {
             "id": user["id"],
             "name": user["name"],
+            "login": user.get("login"),
             "created_at": user.get("created_at"),
             "updated_at": user.get("updated_at"),
         }
 
-    def create_user(self, name: str) -> tuple[dict[str, Any], str]:
+    def create_user(self, name: str, login: str, password: str) -> tuple[dict[str, Any], str]:
         name = validate_user_name(name)
+        login = validate_login(login)
+        password = validate_password(password)
         access_token = secrets.token_urlsafe(32)
         now = utc_now()
         user = {
             "id": uuid.uuid4().hex,
             "name": name,
-            "token_hash": token_hash(access_token),
+            "login": login,
+            "password_hash": hash_password(password),
+            "session_token_hashes": [token_hash(access_token)],
             "created_at": now,
             "updated_at": now,
         }
         with self.users_lock:
             users = self._read_users_unlocked()
+            if any(existing.get("login", "").casefold() == login for existing in users):
+                raise ValueError("Пользователь с таким логином уже зарегистрирован")
             users.append(user)
             self._write_users_unlocked(users)
         return self._public_user(user), access_token
+
+    def login_user(self, login: str, password: str) -> tuple[dict[str, Any], str]:
+        login = validate_login(login)
+        with self.users_lock:
+            users = self._read_users_unlocked()
+            for user in users:
+                if user.get("login", "").casefold() != login:
+                    continue
+                if not verify_password(password, user.get("password_hash", "")):
+                    break
+                access_token = secrets.token_urlsafe(32)
+                sessions = list(user.get("session_token_hashes", []))
+                sessions.append(token_hash(access_token))
+                user["session_token_hashes"] = sessions[-20:]
+                user["updated_at"] = utc_now()
+                self._write_users_unlocked(users)
+                return self._public_user(user), access_token
+        raise UserAccessDenied("Неверный логин или пароль")
+
+    def complete_user_registration(
+        self, token: str, name: str, login: str, password: str
+    ) -> tuple[dict[str, Any], str]:
+        name = validate_user_name(name)
+        login = validate_login(login)
+        password = validate_password(password)
+        candidate = token_hash(token)
+        with self.users_lock:
+            users = self._read_users_unlocked()
+            if any(user.get("login", "").casefold() == login for user in users):
+                raise ValueError("Пользователь с таким логином уже зарегистрирован")
+            for user in users:
+                if not hmac.compare_digest(candidate, user.get("token_hash", "")):
+                    continue
+                access_token = secrets.token_urlsafe(32)
+                user.update(
+                    name=name,
+                    login=login,
+                    password_hash=hash_password(password),
+                    session_token_hashes=[token_hash(access_token)],
+                    updated_at=utc_now(),
+                )
+                user.pop("token_hash", None)
+                self._write_users_unlocked(users)
+                return self._public_user(user), access_token
+        raise UserAccessDenied("Профиль пользователя не найден")
 
     def verify_user(self, token: str) -> dict[str, Any]:
         if not token:
@@ -179,7 +293,10 @@ class ProjectStore:
         candidate = token_hash(token)
         with self.users_lock:
             for user in self._read_users_unlocked():
-                if hmac.compare_digest(candidate, user.get("token_hash", "")):
+                hashes = list(user.get("session_token_hashes", []))
+                if user.get("token_hash"):
+                    hashes.append(user["token_hash"])
+                if any(hmac.compare_digest(candidate, stored) for stored in hashes):
                     return self._public_user(user)
         raise UserAccessDenied("Профиль пользователя не найден")
 
@@ -189,7 +306,10 @@ class ProjectStore:
         with self.users_lock:
             users = self._read_users_unlocked()
             for user in users:
-                if hmac.compare_digest(candidate, user.get("token_hash", "")):
+                hashes = list(user.get("session_token_hashes", []))
+                if user.get("token_hash"):
+                    hashes.append(user["token_hash"])
+                if any(hmac.compare_digest(candidate, stored) for stored in hashes):
                     user["name"] = name
                     user["updated_at"] = utc_now()
                     self._write_users_unlocked(users)
@@ -305,6 +425,39 @@ class ProjectStore:
             "pin_set": bool(meta.get("pin_hash")),
         }
 
+    @staticmethod
+    def _member_level(meta: dict[str, Any], user_id: str) -> str | None:
+        if meta.get("creator_user_id") == user_id:
+            return "owner"
+        for member in meta.get("members") or []:
+            if member.get("user_id") == user_id:
+                return member.get("access_level", "reduced")
+        return None
+
+    def access_level(self, project_id: str, user_id: str) -> str | None:
+        return self._member_level(self.get_meta(project_id), user_id)
+
+    def require_access(
+        self, project_id: str, user_id: str, allowed: set[str] | None = None
+    ) -> str:
+        level = self.access_level(project_id, user_id)
+        if level is None or (allowed is not None and level not in allowed):
+            raise ProjectAccessDenied("Нет доступа к проекту")
+        return level
+
+    def list_projects_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        visible = []
+        for project in self.list_projects():
+            level = self.access_level(project["id"], user_id)
+            if level is None:
+                continue
+            project["access_level"] = level
+            project["can_delete"] = level == "owner"
+            project["can_manage_access"] = level == "owner"
+            project["can_manage_project"] = level in {"owner", "full"}
+            visible.append(project)
+        return visible
+
     def _ensure_unique_name(self, name: str, exclude_id: str | None = None) -> None:
         normalized = name.casefold()
         for project in self.list_projects():
@@ -364,6 +517,7 @@ class ProjectStore:
                 "pin_hash": hash_pin(pin),
                 "access_token_hashes": [],
                 "creator_user_id": creator_user_id,
+                "members": [],
             }
             access_token = secrets.token_urlsafe(32)
             meta["access_token_hashes"].append(token_hash(access_token))
@@ -383,6 +537,148 @@ class ProjectStore:
                     },
                 )
             return self._public_meta(meta), access_token
+
+    def create_invite(self, project_id: str, actor: dict[str, Any]) -> str:
+        self.require_access(project_id, actor["id"], {"owner"})
+        invite_token = secrets.token_urlsafe(32)
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+            meta["invite_token_hash"] = token_hash(invite_token)
+            meta["updated_at"] = utc_now()
+            self._write_meta_unlocked(project_dir, meta)
+        return invite_token
+
+    def accept_invite(
+        self, invite_token: str, pin: str, actor: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = token_hash(invite_token)
+        for project in self.list_projects(strict=True):
+            with self.project_lock(project["id"]):
+                project_dir = self.project_dir(project["id"])
+                meta = self._read_meta_unlocked(project_dir)
+                stored = meta.get("invite_token_hash", "")
+                if not stored or not hmac.compare_digest(candidate, stored):
+                    continue
+                if not verify_pin(pin, meta.get("pin_hash", "")):
+                    raise ProjectAccessDenied("Неверный PIN")
+                level = self._member_level(meta, actor["id"])
+                if level is None:
+                    meta.setdefault("members", []).append(
+                        {
+                            "user_id": actor["id"],
+                            "access_level": "reduced",
+                            "added_at": utc_now(),
+                        }
+                    )
+                    meta["updated_at"] = utc_now()
+                    self._write_meta_unlocked(project_dir, meta)
+                    level = "reduced"
+                result = self._public_meta(meta)
+                result["access_level"] = level
+                return result
+        raise ProjectNotFound("Ссылка-приглашение недействительна")
+
+    def migrate_legacy_project_access(
+        self, tokens: dict[str, str], actor: dict[str, Any]
+    ) -> int:
+        if not isinstance(tokens, dict) or len(tokens) > 100:
+            raise ValueError("Некорректный список старых доступов")
+        migrated = 0
+        for project_id, access_token in tokens.items():
+            if not isinstance(project_id, str) or not isinstance(access_token, str):
+                continue
+            try:
+                project_dir = self.project_dir(project_id)
+            except ProjectNotFound:
+                continue
+            with self.project_lock(project_id):
+                meta = self._read_meta_unlocked(project_dir)
+                candidate = token_hash(access_token)
+                stored_tokens = meta.get("access_token_hashes", [])
+                if not any(hmac.compare_digest(candidate, stored) for stored in stored_tokens):
+                    continue
+                meta["access_token_hashes"] = [
+                    stored
+                    for stored in stored_tokens
+                    if not hmac.compare_digest(candidate, stored)
+                ]
+                if self._member_level(meta, actor["id"]) is not None:
+                    self._write_meta_unlocked(project_dir, meta)
+                    continue
+                if not meta.get("creator_user_id"):
+                    meta["creator_user_id"] = actor["id"]
+                else:
+                    meta.setdefault("members", []).append(
+                        {
+                            "user_id": actor["id"],
+                            "access_level": "reduced",
+                            "added_at": utc_now(),
+                        }
+                    )
+                meta["updated_at"] = utc_now()
+                self._write_meta_unlocked(project_dir, meta)
+                migrated += 1
+        return migrated
+
+    def list_members(self, project_id: str, actor: dict[str, Any]) -> list[dict[str, Any]]:
+        self.require_access(project_id, actor["id"], {"owner"})
+        meta = self.get_meta(project_id)
+        levels = {meta.get("creator_user_id"): "owner"}
+        levels.update(
+            {
+                member.get("user_id"): member.get("access_level", "reduced")
+                for member in meta.get("members") or []
+            }
+        )
+        with self.users_lock:
+            users = self._read_users_unlocked()
+        result = []
+        for user in users:
+            if user["id"] not in levels:
+                continue
+            public = self._public_user(user)
+            public["access_level"] = levels[user["id"]]
+            result.append(public)
+        result.sort(key=lambda member: (member["access_level"] != "owner", member["name"].casefold()))
+        return result
+
+    def set_member_access(
+        self, project_id: str, user_id: str, access_level: str, actor: dict[str, Any]
+    ) -> dict[str, Any]:
+        self.require_access(project_id, actor["id"], {"owner"})
+        if access_level not in {"full", "reduced"}:
+            raise ValueError("Уровень доступа должен быть full или reduced")
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+            if meta.get("creator_user_id") == user_id:
+                raise ValueError("Нельзя изменить права владельца")
+            member = next(
+                (item for item in meta.get("members") or [] if item.get("user_id") == user_id),
+                None,
+            )
+            if member is None:
+                raise ValueError("Пользователь не имеет доступа к проекту")
+            member["access_level"] = access_level
+            meta["updated_at"] = utc_now()
+            self._write_meta_unlocked(project_dir, meta)
+        return {"id": user_id, "access_level": access_level}
+
+    def remove_member(self, project_id: str, user_id: str, actor: dict[str, Any]) -> None:
+        self.require_access(project_id, actor["id"], {"owner"})
+        with self.project_lock(project_id):
+            project_dir = self.project_dir(project_id)
+            meta = self._read_meta_unlocked(project_dir)
+            if meta.get("creator_user_id") == user_id:
+                raise ValueError("Нельзя удалить владельца проекта")
+            members = list(meta.get("members") or [])
+            filtered = [member for member in members if member.get("user_id") != user_id]
+            if len(filtered) == len(members):
+                raise ValueError("Пользователь не имеет доступа к проекту")
+            meta["members"] = filtered
+            meta["updated_at"] = utc_now()
+            self._write_meta_unlocked(project_dir, meta)
 
     def verify_access(self, project_id: str, token: str) -> None:
         if not token:
@@ -408,6 +704,11 @@ class ProjectStore:
             project_dir = self.project_dir(project_id)
             meta = self._read_meta_unlocked(project_dir)
 
+            if meta.get("creator_user_id"):
+                raise ProjectAccessDenied(
+                    "Для подключения к проекту используйте ссылку-приглашение"
+                )
+
             pin_migrated = False
             if not meta.get("pin_hash"):
                 if pin != "1111":
@@ -421,13 +722,23 @@ class ProjectStore:
             if ownership_claimed:
                 meta["creator_user_id"] = user_id
 
+            if user_id and not ownership_claimed and self._member_level(meta, user_id) is None:
+                meta.setdefault("members", []).append(
+                    {
+                        "user_id": user_id,
+                        "access_level": "reduced",
+                        "added_at": utc_now(),
+                    }
+                )
+
             access_token = secrets.token_urlsafe(32)
             hashes = list(meta.get("access_token_hashes", []))
             hashes.append(token_hash(access_token))
             meta["access_token_hashes"] = hashes
-            if pin_migrated or ownership_claimed:
+            if pin_migrated or ownership_claimed or user_id:
                 meta["updated_at"] = utc_now()
-                meta["revision"] = int(meta.get("revision", 0)) + 1
+                if pin_migrated or ownership_claimed:
+                    meta["revision"] = int(meta.get("revision", 0)) + 1
             self._write_meta_unlocked(project_dir, meta)
             if ownership_claimed and user_id and user_name:
                 self._append_audit_unlocked(
@@ -469,9 +780,9 @@ class ProjectStore:
             with self.project_lock(project_id):
                 project_dir = self.project_dir(project_id)
                 meta = self._read_meta_unlocked(project_dir)
-                if not actor or meta.get("creator_user_id") != actor.get("id"):
+                if not actor or self._member_level(meta, actor.get("id", "")) not in {"owner", "full"}:
                     raise ProjectAccessDenied(
-                        "Переименовать проект может только его создатель"
+                        "Переименовать проект может владелец или пользователь с полным доступом"
                     )
                 self._ensure_unique_name(name, exclude_id=project_id)
                 old_name = meta["name"]

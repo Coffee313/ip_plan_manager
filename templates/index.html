@@ -38,6 +38,7 @@
                 aria-label="Открыть меню" aria-haspopup="true" aria-expanded="false">⋯</button>
         <div id="headerMenu" class="header-menu" role="menu" hidden>
           <button id="auditBtn" class="header-menu-item" type="button" role="menuitem">Журнал изменений</button>
+          <button id="manageAccessBtn" class="header-menu-item" type="button" role="menuitem">Доступ и приглашение</button>
           <button id="renameProjectBtn" class="header-menu-item" type="button" role="menuitem">Переименовать проект</button>
           <label id="importLabel" class="header-menu-item" role="menuitem">
             Импорт Excel
@@ -107,19 +108,36 @@
     <form method="dialog" id="userForm">
       <div class="modal-header">
         <div>
-          <h2 id="userDialogTitle">Как вас зовут?</h2>
-          <p id="userDialogHint">Имя будет отображаться в журнале изменений.</p>
+          <h2 id="userDialogTitle">Вход</h2>
+          <p id="userDialogHint">Войдите или зарегистрируйтесь для работы с проектами.</p>
         </div>
         <button id="closeUserDialogBtn" type="button" class="icon-btn" data-close="userDialog">×</button>
       </div>
 
-      <div class="field full">
+      <div id="authModeButtons" class="auth-mode-buttons">
+        <button id="loginModeBtn" class="btn secondary" type="button">Вход</button>
+        <button id="registerModeBtn" class="btn secondary" type="button">Регистрация</button>
+      </div>
+
+      <div id="userNameField" class="field full">
         <label>Ваше имя *</label>
-        <input id="userName" required maxlength="80" autocomplete="name" placeholder="Анна Петрова">
+        <input id="userName" maxlength="80" autocomplete="name" placeholder="Анна Петрова">
+        <small>Укажите реальное имя — оно будет отображаться в журнале изменений.</small>
+      </div>
+
+      <div id="userLoginField" class="field full">
+        <label>Корпоративный логин *</label>
+        <input id="userLogin" required maxlength="80" autocomplete="username" placeholder="a.petrova">
+      </div>
+
+      <div id="userPasswordField" class="field full">
+        <label>Пароль *</label>
+        <input id="userPassword" required type="password" minlength="10" maxlength="256" autocomplete="current-password">
       </div>
 
       <div class="modal-actions">
-        <button type="submit" class="btn primary">Сохранить</button>
+        <button id="logoutBtn" type="button" class="btn secondary" hidden>Выйти</button>
+        <button id="userSubmitBtn" type="submit" class="btn primary">Войти</button>
       </div>
     </form>
   </dialog>
@@ -152,27 +170,46 @@
     </form>
   </dialog>
 
-  <dialog id="unlockDialog" class="modal small-modal">
-    <form method="dialog" id="unlockForm">
+  <dialog id="inviteDialog" class="modal small-modal">
+    <form method="dialog" id="inviteForm">
       <div class="modal-header">
         <div>
-          <h2 id="unlockDialogTitle">Открыть проект</h2>
-          <p id="unlockDialogDescription">PIN потребуется только один раз в этом браузере.</p>
+          <h2>Присоединиться к проекту</h2>
+          <p>Введите PIN, полученный от владельца проекта.</p>
         </div>
-        <button type="button" class="icon-btn" data-close="unlockDialog">×</button>
+        <button type="button" class="icon-btn" data-close="inviteDialog">×</button>
       </div>
 
       <div class="field full">
         <label>PIN проекта *</label>
-        <input id="unlockPIN" required inputmode="numeric" autocomplete="current-password"
+        <input id="invitePIN" required inputmode="numeric" autocomplete="one-time-code"
                pattern="[0-9]{4}" minlength="4" maxlength="4" placeholder="4 цифры">
       </div>
 
       <div class="modal-actions">
-        <button type="button" class="btn secondary" data-close="unlockDialog">Отмена</button>
-        <button type="submit" class="btn primary" id="unlockSubmitBtn">Открыть</button>
+        <button type="button" class="btn secondary" data-close="inviteDialog">Отмена</button>
+        <button type="submit" class="btn primary">Добавить проект</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="accessDialog" class="modal small-modal">
+    <div class="modal-header">
+      <div>
+        <h2>Доступ к проекту</h2>
+        <p>Отправьте коллегам ссылку и PIN проекта. Новый участник получает сокращённый доступ.</p>
+      </div>
+      <button type="button" class="icon-btn" data-close="accessDialog" aria-label="Закрыть">×</button>
+    </div>
+    <div class="access-dialog-content">
+      <button id="createInviteBtn" class="btn primary" type="button">Создать и скопировать ссылку</button>
+      <div id="inviteLinkResult" class="invite-link-result" hidden></div>
+      <h3>Пользователи проекта</h3>
+      <div id="membersList" class="members-list"></div>
+    </div>
+    <div class="modal-actions access-dialog-actions">
+      <button type="button" class="btn secondary" data-close="accessDialog">Закрыть</button>
+    </div>
   </dialog>
 
   <dialog id="siteDialog" class="modal small-modal">

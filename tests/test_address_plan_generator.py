@@ -63,7 +63,10 @@ def k2_cloud_payload() -> dict:
 
 
 def register(client, name: str) -> dict:
-    return client.post("/api/users", json={"name": name}).get_json()["data"]
+    return client.post(
+        "/api/auth/register",
+        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+    ).get_json()["data"]
 
 
 def headers(user: dict, project_id: str, project_token: str, revision: int = 0) -> dict:

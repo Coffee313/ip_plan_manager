@@ -73,7 +73,18 @@ def _validated_members(archive: zipfile.ZipFile) -> tuple[dict, list[zipfile.Zip
             not isinstance(user, dict)
             or not isinstance(user.get("id"), str)
             or not isinstance(user.get("name"), str)
-            or not isinstance(user.get("token_hash"), str)
+            or not (
+                isinstance(user.get("token_hash"), str)
+                or (
+                    isinstance(user.get("login"), str)
+                    and isinstance(user.get("password_hash"), str)
+                    and isinstance(user.get("session_token_hashes"), list)
+                    and all(
+                        isinstance(token, str)
+                        for token in user.get("session_token_hashes", [])
+                    )
+                )
+            )
             for user in users
         ):
             raise ValueError("Некорректный users.json")
@@ -234,7 +245,10 @@ def restore_project_backup(
                 live = store.project_dir(project_id)
                 current_meta = store._read_meta_unlocked(live)
                 restored_meta = store._read_meta_unlocked(staged)
-                for key in ("id", "creator_user_id", "pin_hash", "access_token_hashes"):
+                for key in (
+                    "id", "creator_user_id", "pin_hash", "access_token_hashes",
+                    "members", "invite_token_hash",
+                ):
                     restored_meta[key] = current_meta.get(key)
                 restored_meta["revision"] = int(current_meta.get("revision", 0)) + 1
                 restored_meta["updated_at"] = utc_now()

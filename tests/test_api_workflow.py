@@ -23,7 +23,10 @@ def auth_headers(
 
 def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
-    user_token = client.post("/api/users", json={"name": "Редактор"}).get_json()[
+    user_token = client.post(
+        "/api/auth/register",
+        json={"name": "Редактор", "login": "test.editor", "password": "TestPassword123"},
+    ).get_json()[
         "data"
     ]["access_token"]
     created = client.post(
@@ -78,10 +81,10 @@ def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
     assert client.get(
         f"/api/export?project_id={project_id}",
         headers={"X-Project-Token": "wrong"},
-    ).status_code == 403
+    ).status_code == 401
     exported = client.get(
         f"/api/export?project_id={project_id}",
-        headers={"X-Project-Token": token},
+        headers={"X-User-Token": user_token},
     )
     assert exported.status_code == 200
     workbook = load_workbook(io.BytesIO(exported.data))
@@ -90,7 +93,10 @@ def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
 
 def test_api_allows_same_cidr_in_different_vrfs(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
-    user_token = client.post("/api/users", json={"name": "Редактор"}).get_json()[
+    user_token = client.post(
+        "/api/auth/register",
+        json={"name": "Редактор", "login": "test.editor", "password": "TestPassword123"},
+    ).get_json()[
         "data"
     ]["access_token"]
     created = client.post(

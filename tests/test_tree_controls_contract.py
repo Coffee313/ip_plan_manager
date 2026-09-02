@@ -37,8 +37,10 @@ def test_header_uses_user_avatar_and_popup_menu_without_global_add_subnet():
     assert 'id="templateBtn"' in html
     assert "userInitial(currentUser?.name)" in javascript
     assert "function toggleHeaderMenu" in javascript
-    assert '$("renameProjectBtn").disabled = !hasAccess || !project?.can_delete' in javascript
-    assert "const canImport = hasAccess && !!project?.can_delete" in javascript
+    assert '$("renameProjectBtn").disabled = !hasAccess || !project?.can_manage_project' in javascript
+    assert "const canImport = hasAccess && !!project?.can_manage_project" in javascript
+    assert '${currentProject()?.can_manage_project ? `<label class="btn secondary">' in javascript
+    assert 'if (!currentProject()?.can_manage_project) return;' in javascript
     assert ".header-menu" in css
 
 

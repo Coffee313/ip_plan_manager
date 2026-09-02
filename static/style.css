@@ -323,6 +323,42 @@ body {
   gap: 8px;
   padding-top: 16px;
 }
+.auth-mode-buttons { display: flex; gap: 8px; margin-bottom: 14px; }
+.field small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.access-dialog-content { padding: 0 18px 14px; }
+#accessDialog > .modal-header { padding: 18px 18px 12px; }
+.access-dialog-content h3 { margin: 18px 0 10px; font-size: 14px; }
+.access-dialog-actions { padding: 0 18px 18px; }
+.invite-link-result {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: 8px;
+  background: #f3f7f5;
+  color: var(--muted);
+  font: 12px/1.4 Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.members-list { display: grid; gap: 8px; }
+.member-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.member-identity { display: grid; min-width: 0; }
+.member-identity small { color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.member-access-select { min-width: 140px; }
+.access-badge {
+  padding: 5px 8px;
+  border-radius: 999px;
+  background: #e9f5ee;
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 700;
+}
 .toast {
   position: fixed;
   right: 18px;
@@ -598,6 +634,8 @@ body {
 }
 
 @media (max-width: 560px) {
+  .member-row { grid-template-columns: minmax(0, 1fr) auto; }
+  .member-row .danger { grid-column: 1 / -1; }
   .project-tools { flex-wrap: wrap; }
   .project-select { flex: 1 1 180px; max-width: none; min-width: 0; }
   .sync-status { order: 3; }

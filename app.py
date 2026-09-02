@@ -127,11 +127,11 @@ def create_app(
             raise ValueError("Сначала откройте проект")
         return value
 
-    def authorize(pid: str) -> None:
-        store.verify_access(pid, request.headers.get("X-Project-Token", ""))
-        actor = current_user(required=False)
-        if actor:
-            store.claim_legacy_project_owner(pid, actor)
+    def authorize(pid: str) -> dict:
+        actor = current_user()
+        assert actor is not None
+        store.require_access(pid, actor["id"])
+        return actor
 
     def current_user(required: bool = True):
         token = request.headers.get("X-User-Token", "")
@@ -181,12 +181,40 @@ def create_app(
     def index():
         return render_template("index.html")
 
-    @app.post("/api/users")
-    def create_user():
+    @app.post("/api/auth/register")
+    def register_user():
         try:
             payload = request.get_json(force=True)
-            user, access_token = store.create_user(payload.get("name", ""))
+            existing_token = request.headers.get("X-User-Token", "")
+            if existing_token:
+                user, access_token = store.complete_user_registration(
+                    existing_token,
+                    payload.get("name", ""),
+                    payload.get("login", ""),
+                    payload.get("password", ""),
+                )
+            else:
+                user, access_token = store.create_user(
+                    payload.get("name", ""),
+                    payload.get("login", ""),
+                    payload.get("password", ""),
+                )
             return ok({"user": user, "access_token": access_token})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/auth/login")
+    def login_user():
+        try:
+            payload = request.get_json(force=True)
+            user, access_token = store.login_user(
+                payload.get("login", ""), payload.get("password", "")
+            )
+            return ok({"user": user, "access_token": access_token})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
         except Exception as exc:
             return fail(exc)
 
@@ -213,13 +241,9 @@ def create_app(
     @app.get("/api/projects")
     def list_projects():
         try:
-            user = current_user(required=False)
-            projects = store.list_projects()
-            for project in projects:
-                project["can_delete"] = bool(
-                    user and store.is_creator(project["id"], user["id"])
-                )
-            return ok(projects)
+            user = current_user()
+            assert user is not None
+            return ok(store.list_projects_for_user(user["id"]))
         except UserAccessDenied as exc:
             return fail(exc, 401)
 
@@ -235,15 +259,36 @@ def create_app(
                 user["id"],
                 user["name"],
             )
-            project["can_delete"] = True
+            project.update(
+                access_level="owner",
+                can_delete=True,
+                can_manage_access=True,
+                can_manage_project=True,
+            )
             return ok({"project": project, "access_token": access_token})
         except UserAccessDenied as exc:
             return fail(exc, 401)
         except Exception as exc:
             return fail(exc)
 
+    @app.post("/api/projects/<pid>/invite")
+    def create_project_invite(pid: str):
+        try:
+            user = current_user()
+            assert user is not None
+            return ok({"token": store.create_invite(pid, user)})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except ProjectNotFound as exc:
+            return fail(exc, 404)
+        except Exception as exc:
+            return fail(exc)
+
     @app.post("/api/projects/<pid>/unlock")
-    def unlock_project(pid: str):
+    def unlock_project_compatibility(pid: str):
+        """Keep old saved project links working while the UI moves to invitations."""
         try:
             user = current_user()
             assert user is not None
@@ -251,7 +296,7 @@ def create_app(
             result = store.unlock_project(
                 pid, payload.get("pin", ""), user["id"], user["name"]
             )
-            result["project"]["can_delete"] = store.is_creator(pid, user["id"])
+            result["project"]["access_level"] = store.access_level(pid, user["id"])
             return ok(result)
         except UserAccessDenied as exc:
             return fail(exc, 401)
@@ -259,6 +304,78 @@ def create_app(
             return fail(exc, 403)
         except ProjectNotFound as exc:
             return fail(exc, 404)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/invitations/<invite_token>/accept")
+    def accept_project_invite(invite_token: str):
+        try:
+            user = current_user()
+            assert user is not None
+            payload = request.get_json(force=True)
+            return ok(store.accept_invite(invite_token, payload.get("pin", ""), user))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except ProjectNotFound as exc:
+            return fail(exc, 404)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.post("/api/migrations/legacy-project-access")
+    def migrate_legacy_project_access():
+        try:
+            user = current_user()
+            assert user is not None
+            payload = request.get_json(force=True)
+            migrated = store.migrate_legacy_project_access(
+                payload.get("tokens", {}), user
+            )
+            return ok({"migrated": migrated})
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.get("/api/projects/<pid>/members")
+    def get_project_members(pid: str):
+        try:
+            user = current_user()
+            assert user is not None
+            return ok(store.list_members(pid, user))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.put("/api/projects/<pid>/members/<user_id>")
+    def update_project_member(pid: str, user_id: str):
+        try:
+            user = current_user()
+            assert user is not None
+            payload = request.get_json(force=True)
+            return ok(store.set_member_access(pid, user_id, payload.get("access_level", ""), user))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
+        except Exception as exc:
+            return fail(exc)
+
+    @app.delete("/api/projects/<pid>/members/<user_id>")
+    def delete_project_member(pid: str, user_id: str):
+        try:
+            user = current_user()
+            assert user is not None
+            store.remove_member(pid, user_id, user)
+            return ok()
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except ProjectAccessDenied as exc:
+            return fail(exc, 403)
         except Exception as exc:
             return fail(exc)
 
@@ -390,8 +507,7 @@ def create_app(
         user = current_user()
         assert user is not None
         authorize(pid)
-        if not store.is_creator(pid, user["id"]):
-            raise ProjectAccessDenied("Только владелец проекта может управлять бэкапами")
+        store.require_access(pid, user["id"], {"owner", "full"})
         return user
 
     @app.get("/api/projects/<pid>/backups")
