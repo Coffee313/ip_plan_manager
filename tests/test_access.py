@@ -9,7 +9,7 @@ from project_store import ProjectStore
 def register(client, name: str = "Тестовый пользователь") -> tuple[dict, dict[str, str]]:
     data = client.post(
         "/api/auth/register",
-        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+        json={"login": f"user-{abs(hash(name))}"},
     ).get_json()["data"]
     return data, {"X-User-Token": data["access_token"]}
 

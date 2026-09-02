@@ -77,7 +77,6 @@ def _validated_members(archive: zipfile.ZipFile) -> tuple[dict, list[zipfile.Zip
                 isinstance(user.get("token_hash"), str)
                 or (
                     isinstance(user.get("login"), str)
-                    and isinstance(user.get("password_hash"), str)
                     and isinstance(user.get("session_token_hashes"), list)
                     and all(
                         isinstance(token, str)

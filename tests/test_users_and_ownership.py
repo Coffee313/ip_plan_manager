@@ -11,7 +11,7 @@ from project_store import ProjectStore
 def register(client, name: str) -> dict:
     response = client.post(
         "/api/auth/register",
-        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+        json={"login": f"user-{abs(hash(name))}"},
     )
     assert response.status_code == 200
     return response.get_json()["data"]
@@ -47,24 +47,18 @@ def workbook_bytes() -> bytes:
     return output.getvalue()
 
 
-def test_user_registration_profile_edit_and_restart_persistence(tmp_path):
+def test_user_registration_and_restart_persistence(tmp_path):
     data_root = tmp_path / "data"
     client = create_app(ProjectStore(data_root)).test_client()
 
     registered = register(client, "Анна")
     token = registered["access_token"]
-    assert registered["user"]["name"] == "Анна"
-
-    updated = client.put(
-        "/api/users/me", json={"name": "Анна Петрова"}, headers=user_headers(token)
-    )
-    assert updated.status_code == 200
-    assert updated.get_json()["data"]["name"] == "Анна Петрова"
+    assert registered["user"]["name"] == registered["user"]["login"]
 
     restarted = create_app(ProjectStore(data_root)).test_client()
     me = restarted.get("/api/users/me", headers=user_headers(token))
     assert me.status_code == 200
-    assert me.get_json()["data"]["name"] == "Анна Петрова"
+    assert me.get_json()["data"]["login"] == registered["user"]["login"]
 
 
 def test_only_creator_can_delete_project(tmp_path):
@@ -117,7 +111,7 @@ def test_only_creator_can_delete_project(tmp_path):
     event = system_audit.get_json()["data"][0]
     assert event["action"] == "project_deleted"
     assert event["project_id"] == project_id
-    assert event["user_name"] == "Владелец"
+    assert event["user_name"] == owner["user"]["login"]
 
 
 def test_only_creator_can_rename_project(tmp_path):

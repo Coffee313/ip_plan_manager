@@ -6,10 +6,10 @@ from app import create_app
 from project_store import ProjectStore, token_hash
 
 
-def register(client, name: str, login: str, password: str = "SecurePass123") -> dict:
+def register(client, name: str, login: str) -> dict:
     response = client.post(
         "/api/auth/register",
-        json={"name": name, "login": login, "password": password},
+        json={"login": login},
     )
     assert response.status_code == 200
     return response.get_json()["data"]
@@ -19,30 +19,25 @@ def auth(token: str, **extra: str) -> dict[str, str]:
     return {"X-User-Token": token, **extra}
 
 
-def test_registration_requires_unique_corporate_login_and_password_login_survives_restart(tmp_path):
+def test_registration_requires_unique_corporate_login_and_login_survives_restart(tmp_path):
     data_root = tmp_path / "data"
     client = create_app(ProjectStore(data_root)).test_client()
 
     registered = register(client, "Анна Петрова", "a.petrova")
     assert registered["user"]["login"] == "a.petrova"
-    assert "password_hash" not in registered["user"]
+    assert registered["user"]["name"] == "a.petrova"
 
     duplicate = client.post(
         "/api/auth/register",
-        json={"name": "Другая Анна", "login": "A.PETROVA", "password": "OtherPass123"},
+        json={"login": "A.PETROVA"},
     )
     assert duplicate.status_code == 400
     assert "логин" in duplicate.get_json()["error"].lower()
 
     restarted = create_app(ProjectStore(data_root)).test_client()
-    wrong = restarted.post(
-        "/api/auth/login", json={"login": "a.petrova", "password": "wrong-pass"}
-    )
-    assert wrong.status_code == 401
-
     logged_in = restarted.post(
         "/api/auth/login",
-        json={"login": "A.PETROVA", "password": "SecurePass123"},
+        json={"login": "A.PETROVA"},
     )
     assert logged_in.status_code == 200
     assert logged_in.get_json()["data"]["user"]["id"] == registered["user"]["id"]
@@ -56,11 +51,11 @@ def test_old_name_only_registration_endpoint_is_not_available(tmp_path):
 
 def test_legacy_browser_profile_can_add_credentials_without_losing_owned_projects(tmp_path):
     store = ProjectStore(tmp_path / "data")
-    user, old_token = store.create_user("Старый владелец", "temporary", "TestPassword123")
+    user, old_token = store.create_user("temporary")
     users_payload = json.loads(store.users_path.read_text(encoding="utf-8"))
     legacy_user = users_payload["users"][0]
     legacy_user.pop("login")
-    legacy_user.pop("password_hash")
+    legacy_user.pop("password_hash", None)
     legacy_user.pop("session_token_hashes")
     legacy_user["token_hash"] = token_hash(old_token)
     store.users_path.write_text(json.dumps(users_payload), encoding="utf-8")
@@ -69,11 +64,7 @@ def test_legacy_browser_profile_can_add_credentials_without_losing_owned_project
 
     upgraded = client.post(
         "/api/auth/register",
-        json={
-            "name": "Старый владелец",
-            "login": "legacy.owner",
-            "password": "NewPassword123",
-        },
+        json={"login": "legacy.owner"},
         headers=auth(old_token),
     )
 
@@ -151,7 +142,7 @@ def test_project_id_and_pin_cannot_bypass_required_invite_link(tmp_path):
 
 def test_saved_legacy_project_token_migrates_to_user_membership(tmp_path):
     store = ProjectStore(tmp_path / "data")
-    owner, _ = store.create_user("Владелец", "owner", "TestPassword123")
+    owner, _ = store.create_user("owner")
     project, legacy_project_token = store.create_project(
         "Старый общий проект", "1234", owner["id"], owner["name"]
     )

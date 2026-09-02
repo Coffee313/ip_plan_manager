@@ -45,15 +45,6 @@ class UserAccessDenied(ValueError):
     pass
 
 
-def validate_user_name(name: str) -> str:
-    value = " ".join(str(name or "").split())
-    if not value:
-        raise ValueError("Укажите имя пользователя")
-    if len(value) > 80:
-        raise ValueError("Имя пользователя слишком длинное")
-    return value
-
-
 def validate_login(login: str) -> str:
     value = str(login or "").strip().casefold()
     if not value:
@@ -62,15 +53,6 @@ def validate_login(login: str) -> str:
         raise ValueError("Корпоративный логин слишком длинный")
     if not all(char.isascii() and (char.isalnum() or char in "._@-") for char in value):
         raise ValueError("Логин может содержать латинские буквы, цифры и символы . _ @ -")
-    return value
-
-
-def validate_password(password: str) -> str:
-    value = str(password or "")
-    if len(value) < 10:
-        raise ValueError("Пароль должен содержать не менее 10 символов")
-    if len(value) > 256:
-        raise ValueError("Пароль слишком длинный")
     return value
 
 
@@ -101,48 +83,6 @@ def hash_pin(pin: str, salt: bytes | None = None) -> str:
             base64.urlsafe_b64encode(digest).decode("ascii"),
         ]
     )
-
-
-def hash_password(password: str, salt: bytes | None = None) -> str:
-    salt = salt or secrets.token_bytes(16)
-    digest = hashlib.scrypt(
-        validate_password(password).encode("utf-8"),
-        salt=salt,
-        n=2**14,
-        r=8,
-        p=1,
-        dklen=32,
-    )
-    return "$".join(
-        [
-            "scrypt",
-            "16384",
-            "8",
-            "1",
-            base64.urlsafe_b64encode(salt).decode("ascii"),
-            base64.urlsafe_b64encode(digest).decode("ascii"),
-        ]
-    )
-
-
-def verify_password(password: str, encoded: str) -> bool:
-    try:
-        algorithm, n, r, p, salt_text, digest_text = encoded.split("$", 5)
-        if algorithm != "scrypt":
-            return False
-        salt = base64.urlsafe_b64decode(salt_text.encode("ascii"))
-        expected = base64.urlsafe_b64decode(digest_text.encode("ascii"))
-        actual = hashlib.scrypt(
-            str(password or "").encode("utf-8"),
-            salt=salt,
-            n=int(n),
-            r=int(r),
-            p=int(p),
-            dklen=len(expected),
-        )
-        return hmac.compare_digest(actual, expected)
-    except (TypeError, ValueError):
-        return False
 
 
 def verify_pin(pin: str, encoded: str) -> bool:
@@ -219,17 +159,14 @@ class ProjectStore:
             "updated_at": user.get("updated_at"),
         }
 
-    def create_user(self, name: str, login: str, password: str) -> tuple[dict[str, Any], str]:
-        name = validate_user_name(name)
+    def create_user(self, login: str) -> tuple[dict[str, Any], str]:
         login = validate_login(login)
-        password = validate_password(password)
         access_token = secrets.token_urlsafe(32)
         now = utc_now()
         user = {
             "id": uuid.uuid4().hex,
-            "name": name,
+            "name": login,
             "login": login,
-            "password_hash": hash_password(password),
             "session_token_hashes": [token_hash(access_token)],
             "created_at": now,
             "updated_at": now,
@@ -242,30 +179,28 @@ class ProjectStore:
             self._write_users_unlocked(users)
         return self._public_user(user), access_token
 
-    def login_user(self, login: str, password: str) -> tuple[dict[str, Any], str]:
+    def login_user(self, login: str) -> tuple[dict[str, Any], str]:
         login = validate_login(login)
         with self.users_lock:
             users = self._read_users_unlocked()
             for user in users:
                 if user.get("login", "").casefold() != login:
                     continue
-                if not verify_password(password, user.get("password_hash", "")):
-                    break
                 access_token = secrets.token_urlsafe(32)
                 sessions = list(user.get("session_token_hashes", []))
                 sessions.append(token_hash(access_token))
+                user["name"] = login
                 user["session_token_hashes"] = sessions[-20:]
                 user["updated_at"] = utc_now()
+                user.pop("password_hash", None)
                 self._write_users_unlocked(users)
                 return self._public_user(user), access_token
-        raise UserAccessDenied("Неверный логин или пароль")
+        raise UserAccessDenied("Пользователь с таким корпоративным логином не найден")
 
     def complete_user_registration(
-        self, token: str, name: str, login: str, password: str
+        self, token: str, login: str
     ) -> tuple[dict[str, Any], str]:
-        name = validate_user_name(name)
         login = validate_login(login)
-        password = validate_password(password)
         candidate = token_hash(token)
         with self.users_lock:
             users = self._read_users_unlocked()
@@ -276,32 +211,20 @@ class ProjectStore:
                     continue
                 access_token = secrets.token_urlsafe(32)
                 user.update(
-                    name=name,
+                    name=login,
                     login=login,
-                    password_hash=hash_password(password),
                     session_token_hashes=[token_hash(access_token)],
                     updated_at=utc_now(),
                 )
                 user.pop("token_hash", None)
+                user.pop("password_hash", None)
                 self._write_users_unlocked(users)
                 return self._public_user(user), access_token
         raise UserAccessDenied("Профиль пользователя не найден")
 
     def verify_user(self, token: str) -> dict[str, Any]:
         if not token:
-            raise UserAccessDenied("Сначала укажите свое имя")
-        candidate = token_hash(token)
-        with self.users_lock:
-            for user in self._read_users_unlocked():
-                hashes = list(user.get("session_token_hashes", []))
-                if user.get("token_hash"):
-                    hashes.append(user["token_hash"])
-                if any(hmac.compare_digest(candidate, stored) for stored in hashes):
-                    return self._public_user(user)
-        raise UserAccessDenied("Профиль пользователя не найден")
-
-    def update_user(self, token: str, name: str) -> dict[str, Any]:
-        name = validate_user_name(name)
+            raise UserAccessDenied("Сначала войдите по корпоративному логину")
         candidate = token_hash(token)
         with self.users_lock:
             users = self._read_users_unlocked()
@@ -310,9 +233,14 @@ class ProjectStore:
                 if user.get("token_hash"):
                     hashes.append(user["token_hash"])
                 if any(hmac.compare_digest(candidate, stored) for stored in hashes):
-                    user["name"] = name
-                    user["updated_at"] = utc_now()
-                    self._write_users_unlocked(users)
+                    login = user.get("login")
+                    if login and (
+                        user.get("name") != login or "password_hash" in user
+                    ):
+                        user["name"] = login
+                        user.pop("password_hash", None)
+                        user["updated_at"] = utc_now()
+                        self._write_users_unlocked(users)
                     return self._public_user(user)
         raise UserAccessDenied("Профиль пользователя не найден")
 

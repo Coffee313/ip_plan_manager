@@ -65,7 +65,7 @@ def k2_cloud_payload() -> dict:
 def register(client, name: str) -> dict:
     return client.post(
         "/api/auth/register",
-        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+        json={"login": f"user-{abs(hash(name))}"},
     ).get_json()["data"]
 
 
@@ -429,7 +429,7 @@ def test_preview_and_apply_create_one_atomic_audited_plan(tmp_path, monkeypatch)
     assert len(state["sites"][0]["tree"]) == 4
     audit = store.audit_log(project_id)
     assert audit[0]["action"] == "address_plan_generated"
-    assert audit[0]["user_name"] == "Архитектор"
+    assert audit[0]["user_name"] == user["user"]["login"]
 
     undone = client.post(
         "/api/undo",

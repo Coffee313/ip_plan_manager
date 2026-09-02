@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>IP Plan Manager</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=18.1">
 </head>
 <body>
   <header class="topbar">
@@ -104,42 +104,60 @@
     </div>
   </dialog>
 
-  <dialog id="userDialog" class="modal small-modal">
-    <form method="dialog" id="userForm">
+  <dialog id="loginDialog" class="modal small-modal">
+    <form method="dialog" id="loginForm">
       <div class="modal-header">
         <div>
-          <h2 id="userDialogTitle">Вход</h2>
-          <p id="userDialogHint">Войдите или зарегистрируйтесь для работы с проектами.</p>
+          <h2>Вход</h2>
+          <p>Введите корпоративный логин, который указывали при регистрации.</p>
         </div>
-        <button id="closeUserDialogBtn" type="button" class="icon-btn" data-close="userDialog">×</button>
       </div>
-
-      <div id="authModeButtons" class="auth-mode-buttons">
-        <button id="loginModeBtn" class="btn secondary" type="button">Вход</button>
-        <button id="registerModeBtn" class="btn secondary" type="button">Регистрация</button>
-      </div>
-
-      <div id="userNameField" class="field full">
-        <label>Ваше имя *</label>
-        <input id="userName" maxlength="80" autocomplete="name" placeholder="Анна Петрова">
-        <small>Укажите реальное имя — оно будет отображаться в журнале изменений.</small>
-      </div>
-
-      <div id="userLoginField" class="field full">
+      <div class="field full">
         <label>Корпоративный логин *</label>
-        <input id="userLogin" required maxlength="80" autocomplete="username" placeholder="a.petrova">
+        <input id="loginLogin" required maxlength="80" autocomplete="username" placeholder="ivanov.ii">
       </div>
-
-      <div id="userPasswordField" class="field full">
-        <label>Пароль *</label>
-        <input id="userPassword" required type="password" minlength="10" maxlength="256" autocomplete="current-password">
-      </div>
-
-      <div class="modal-actions">
-        <button id="logoutBtn" type="button" class="btn secondary" hidden>Выйти</button>
-        <button id="userSubmitBtn" type="submit" class="btn primary">Войти</button>
+      <div class="modal-actions auth-dialog-actions">
+        <button id="openRegistrationBtn" type="button" class="btn secondary">Регистрация</button>
+        <button type="submit" class="btn primary">Войти</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="registrationDialog" class="modal small-modal">
+    <form method="dialog" id="registrationForm">
+      <div class="modal-header">
+        <div>
+          <h2>Регистрация</h2>
+          <p>Придуманные имена не используйте: укажите свой понятный корпоративный логин.</p>
+        </div>
+      </div>
+      <div class="field full">
+        <label>Корпоративный логин *</label>
+        <input id="registrationLogin" required maxlength="80" autocomplete="username" placeholder="ivanov.ii">
+        <small>Например: ivanov.ii или i.ivanov — в том виде, как логин используется в компании.</small>
+      </div>
+      <div class="modal-actions auth-dialog-actions">
+        <button id="openLoginBtn" type="button" class="btn secondary">Назад ко входу</button>
+        <button type="submit" class="btn primary">Зарегистрироваться</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="profileDialog" class="modal small-modal">
+    <div class="modal-header auth-profile-header">
+      <div>
+        <h2>Личный кабинет</h2>
+        <p>Вы вошли под корпоративным логином:</p>
+      </div>
+      <button type="button" class="icon-btn" data-close="profileDialog" aria-label="Закрыть">×</button>
+    </div>
+    <div class="auth-profile-content">
+      <input id="profileLogin" readonly aria-label="Корпоративный логин">
+    </div>
+    <div class="modal-actions auth-profile-actions">
+      <button id="logoutBtn" type="button" class="btn secondary">Выйти</button>
+      <button type="button" class="btn primary" data-close="profileDialog">Закрыть</button>
+    </div>
   </dialog>
 
   <dialog id="projectDialog" class="modal small-modal">
@@ -471,6 +489,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=18.1"></script>
 </body>
 </html>

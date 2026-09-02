@@ -323,8 +323,11 @@ body {
   gap: 8px;
   padding-top: 16px;
 }
-.auth-mode-buttons { display: flex; gap: 8px; margin-bottom: 14px; }
 .field small { color: var(--muted); font-size: 11px; line-height: 1.35; }
+.auth-dialog-actions { justify-content: space-between; flex-wrap: wrap; }
+.auth-profile-header { padding: 18px 18px 0; }
+.auth-profile-content { padding: 0 18px; }
+.auth-profile-actions { padding: 0 18px 18px; }
 .access-dialog-content { padding: 0 18px 14px; }
 #accessDialog > .modal-header { padding: 18px 18px 12px; }
 .access-dialog-content h3 { margin: 18px 0 10px; font-size: 14px; }

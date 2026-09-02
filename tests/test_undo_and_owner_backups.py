@@ -9,7 +9,7 @@ from project_store import ProjectStore
 def register(client, name: str) -> dict:
     return client.post(
         "/api/auth/register",
-        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+        json={"login": f"user-{abs(hash(name))}"},
     ).get_json()["data"]
 
 
@@ -290,7 +290,7 @@ def test_owner_can_undo_selected_colleague_change(tmp_path):
     state, revision = store.state(pid)
     assert revision == 2
     assert state["sites"] == []
-    assert "изменение пользователя Коллега" in store.audit_log(pid)[0]["description"]
+    assert f"изменение пользователя {colleague['user']['login']}" in store.audit_log(pid)[0]["description"]
     audit_after_undo = client.get(
         "/api/audit",
         headers=project_headers(owner, pid, created["access_token"]),

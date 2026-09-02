@@ -25,7 +25,7 @@ def test_authenticated_project_round_trip_and_revision_conflict(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
     user_token = client.post(
         "/api/auth/register",
-        json={"name": "Редактор", "login": "test.editor", "password": "TestPassword123"},
+        json={"login": "test.editor"},
     ).get_json()[
         "data"
     ]["access_token"]
@@ -95,7 +95,7 @@ def test_api_allows_same_cidr_in_different_vrfs(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
     user_token = client.post(
         "/api/auth/register",
-        json={"name": "Редактор", "login": "test.editor", "password": "TestPassword123"},
+        json={"login": "test.editor"},
     ).get_json()[
         "data"
     ]["access_token"]

@@ -28,13 +28,14 @@ def test_user_registration_project_sharing_and_audit_drawer_exist():
     css = (ROOT / "static/style.css").read_text(encoding="utf-8")
 
     for element_id in (
-        "userDialog",
-        "userForm",
-        "userName",
-        "userLogin",
-        "userPassword",
-        "loginModeBtn",
-        "registerModeBtn",
+        "loginDialog",
+        "loginForm",
+        "loginLogin",
+        "registrationDialog",
+        "registrationForm",
+        "registrationLogin",
+        "profileDialog",
+        "profileLogin",
         "userProfileBtn",
         "manageAccessBtn",
         "accessDialog",

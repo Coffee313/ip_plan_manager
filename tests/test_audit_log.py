@@ -7,7 +7,7 @@ from project_store import ProjectStore
 def register(client, name: str) -> dict:
     return client.post(
         "/api/auth/register",
-        json={"name": name, "login": f"user-{abs(hash(name))}", "password": "TestPassword123"},
+        json={"login": f"user-{abs(hash(name))}"},
     ).get_json()["data"]
 
 
@@ -61,7 +61,7 @@ def test_every_successful_change_is_visible_with_actor_and_row_link(tmp_path):
     assert logs_response.status_code == 200
     events = logs_response.get_json()["data"]
     assert [event["action"] for event in events] == ["site_created", "project_created"]
-    assert events[0]["user_name"] == "Анна"
+    assert events[0]["user_name"] == user["user"]["login"]
     assert events[0]["target_type"] == "site"
     assert events[0]["target_id"] == site_id
     assert events[0]["anchor"] == f"site-{site_id}"
@@ -83,12 +83,6 @@ def test_every_successful_change_is_visible_with_actor_and_row_link(tmp_path):
     ).get_json()["data"]
     assert len(unchanged) == 2
 
-    renamed = client.put(
-        "/api/users/me",
-        json={"name": "Анна Иванова"},
-        headers=user_headers,
-    )
-    assert renamed.status_code == 200
     updated_headers = {
         **headers,
         "X-Project-Revision": str(site_response.get_json()["revision"]),
@@ -108,10 +102,10 @@ def test_every_successful_change_is_visible_with_actor_and_row_link(tmp_path):
         },
     ).get_json()["data"]
     assert newest[0]["action"] == "site_updated"
-    assert newest[0]["user_name"] == "Анна Иванова"
+    assert newest[0]["user_name"] == user["user"]["login"]
     assert newest[0]["before"] == {"Название": "Москва"}
     assert newest[0]["after"] == {"Название": "Москва-2"}
-    assert newest[1]["user_name"] == "Анна"
+    assert newest[1]["user_name"] == user["user"]["login"]
 
 
 def test_audit_log_is_available_to_another_user_with_project_access(tmp_path):

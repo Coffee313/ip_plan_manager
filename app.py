@@ -189,16 +189,10 @@ def create_app(
             if existing_token:
                 user, access_token = store.complete_user_registration(
                     existing_token,
-                    payload.get("name", ""),
                     payload.get("login", ""),
-                    payload.get("password", ""),
                 )
             else:
-                user, access_token = store.create_user(
-                    payload.get("name", ""),
-                    payload.get("login", ""),
-                    payload.get("password", ""),
-                )
+                user, access_token = store.create_user(payload.get("login", ""))
             return ok({"user": user, "access_token": access_token})
         except UserAccessDenied as exc:
             return fail(exc, 401)
@@ -209,9 +203,7 @@ def create_app(
     def login_user():
         try:
             payload = request.get_json(force=True)
-            user, access_token = store.login_user(
-                payload.get("login", ""), payload.get("password", "")
-            )
+            user, access_token = store.login_user(payload.get("login", ""))
             return ok({"user": user, "access_token": access_token})
         except UserAccessDenied as exc:
             return fail(exc, 401)
@@ -224,19 +216,6 @@ def create_app(
             return ok(current_user())
         except UserAccessDenied as exc:
             return fail(exc, 401)
-
-    @app.put("/api/users/me")
-    def update_current_user():
-        try:
-            payload = request.get_json(force=True)
-            user = store.update_user(
-                request.headers.get("X-User-Token", ""), payload.get("name", "")
-            )
-            return ok(user)
-        except UserAccessDenied as exc:
-            return fail(exc, 401)
-        except Exception as exc:
-            return fail(exc)
 
     @app.get("/api/projects")
     def list_projects():

@@ -3,8 +3,7 @@ let projects = [];
 const userTokenStorageKey = "ipPlanManager.userToken";
 let userToken = localStorage.getItem(userTokenStorageKey) || "";
 let currentUser = null;
-let userDialogResolve = null;
-let authDialogMode = "login";
+let authDialogResolve = null;
 let pendingInviteToken = new URLSearchParams(window.location.search).get("invite") || "";
 let currentProjectId = localStorage.getItem("ipPlanManager.projectId") || "";
 let projectRevision = null;
@@ -92,10 +91,10 @@ function toast(message, error = false) {
 }
 
 function updateUserControls() {
-  const name = currentUser?.name || "Пользователь";
-  $("userAvatar").textContent = userInitial(currentUser?.name);
-  $("userProfileBtn").title = name;
-  $("userProfileBtn").setAttribute("aria-label", `Профиль пользователя: ${name}`);
+  const login = currentUser?.login || "Пользователь";
+  $("userAvatar").textContent = userInitial(currentUser?.login);
+  $("userProfileBtn").title = login;
+  $("userProfileBtn").setAttribute("aria-label", `Профиль пользователя: ${login}`);
 }
 
 function userInitial(name) {
@@ -114,82 +113,70 @@ function toggleHeaderMenu() {
   $("headerMenuBtn").setAttribute("aria-expanded", String(opening));
 }
 
-function setAuthDialogMode(mode) {
-  authDialogMode = mode;
-  const profile = mode === "profile";
-  const registering = mode === "register";
-  $("authModeButtons").hidden = profile;
-  $("userNameField").hidden = mode === "login";
-  $("userLoginField").hidden = profile;
-  $("userPasswordField").hidden = profile;
-  $("userName").required = registering || profile;
-  $("userLogin").required = !profile;
-  $("userPassword").required = !profile;
-  $("logoutBtn").hidden = !profile;
-  $("closeUserDialogBtn").hidden = !currentUser;
-  $("userDialogTitle").textContent = profile ? "Профиль" : registering ? "Регистрация" : "Вход";
-  $("userDialogHint").textContent = profile
-    ? `Корпоративный логин: ${currentUser?.login || "—"}`
-    : registering
-      ? "Используйте реальное имя и корпоративный логин."
-      : "Введите корпоративный логин и пароль.";
-  $("userSubmitBtn").textContent = profile ? "Сохранить имя" : registering ? "Зарегистрироваться" : "Войти";
-  $("loginModeBtn").classList.toggle("primary", mode === "login");
-  $("registerModeBtn").classList.toggle("primary", registering);
+function openLoginDialog() {
+  if ($("registrationDialog").open) $("registrationDialog").close();
+  if ($("profileDialog").open) $("profileDialog").close();
+  if (!$("loginDialog").open) $("loginDialog").showModal();
+  $("loginLogin").focus();
 }
 
-function openUserDialog(mode = currentUser ? "profile" : "login") {
-  setAuthDialogMode(mode);
-  $("userName").value = currentUser?.name || "";
-  if (!currentUser) $("userPassword").value = "";
-  if (!$("userDialog").open) $("userDialog").showModal();
-  $(mode === "login" ? "userLogin" : "userName").focus();
+function openRegistrationDialog() {
+  if ($("loginDialog").open) $("loginDialog").close();
+  if (!$("registrationDialog").open) $("registrationDialog").showModal();
+  $("registrationLogin").focus();
 }
 
-async function saveUserProfile(event) {
+function openProfileDialog() {
+  $("profileLogin").value = currentUser?.login || "";
+  if (!$("profileDialog").open) $("profileDialog").showModal();
+}
+
+async function finishAuthentication(result, message) {
+  currentUser = result.user;
+  userToken = result.access_token;
+  localStorage.setItem(userTokenStorageKey, userToken);
+  updateUserControls();
+  if ($("loginDialog").open) $("loginDialog").close();
+  if ($("registrationDialog").open) $("registrationDialog").close();
+  toast(message);
+  if (authDialogResolve) {
+    authDialogResolve();
+    authDialogResolve = null;
+  } else {
+    await loadProjects();
+    render();
+    if (pendingInviteToken && !$("inviteDialog").open) {
+      $("invitePIN").value = "";
+      $("inviteDialog").showModal();
+    }
+  }
+}
+
+async function submitLogin(event) {
   event.preventDefault();
-  const wasAuthenticating = authDialogMode !== "profile";
-  const name = $("userName").value.trim();
-  const login = $("userLogin").value.trim();
-  const password = $("userPassword").value;
-
   try {
-    if (authDialogMode === "profile") {
-      currentUser = await api("/api/users/me", {
-        method: "PUT",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({name})
-      });
-      toast("Имя изменено");
-    } else {
-      const endpoint = authDialogMode === "register" ? "/api/auth/register" : "/api/auth/login";
-      const payload = authDialogMode === "register" ? {name, login, password} : {login, password};
-      const result = await api(endpoint, {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload)
-      });
-      currentUser = result.user;
-      userToken = result.access_token;
-      localStorage.setItem(userTokenStorageKey, userToken);
-      toast(authDialogMode === "register" ? "Регистрация завершена" : "Вход выполнен");
-    }
-    updateUserControls();
-    $("userDialog").close();
-    if (userDialogResolve) {
-      userDialogResolve();
-      userDialogResolve = null;
-    } else if (wasAuthenticating) {
-      await loadProjects();
-      render();
-      if (pendingInviteToken && !$("inviteDialog").open) {
-        $("invitePIN").value = "";
-        $("inviteDialog").showModal();
-      }
-    }
+    const result = await api("/api/auth/login", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({login: $("loginLogin").value.trim()})
+    });
+    await finishAuthentication(result, "Вход выполнен");
   } catch (error) {
     toast(error.message, true);
-    if (error.status === 401) openUserDialog("login");
+  }
+}
+
+async function submitRegistration(event) {
+  event.preventDefault();
+  try {
+    const result = await api("/api/auth/register", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({login: $("registrationLogin").value.trim()})
+    });
+    await finishAuthentication(result, "Регистрация завершена");
+  } catch (error) {
+    toast(error.message, true);
   }
 }
 
@@ -200,8 +187,8 @@ async function ensureUserProfile() {
       updateUserControls();
       if (!currentUser.login) {
         await new Promise(resolve => {
-          userDialogResolve = resolve;
-          openUserDialog("register");
+          authDialogResolve = resolve;
+          openRegistrationDialog();
         });
       }
       return;
@@ -211,8 +198,8 @@ async function ensureUserProfile() {
   }
 
   await new Promise(resolve => {
-    userDialogResolve = resolve;
-    openUserDialog("login");
+    authDialogResolve = resolve;
+    openLoginDialog();
   });
 }
 
@@ -224,10 +211,10 @@ function logoutUser() {
   state = null;
   localStorage.removeItem(userTokenStorageKey);
   localStorage.removeItem("ipPlanManager.projectId");
-  $("userDialog").close();
+  if ($("profileDialog").open) $("profileDialog").close();
   updateUserControls();
   render();
-  openUserDialog("login");
+  openLoginDialog();
 }
 
 async function migrateLegacyProjectAccess() {
@@ -524,10 +511,8 @@ async function loadProjectMembers() {
       const identity = document.createElement("div");
       identity.className = "member-identity";
       const name = document.createElement("strong");
-      name.textContent = member.name;
-      const login = document.createElement("small");
-      login.textContent = member.login || "";
-      identity.append(name, login);
+      name.textContent = member.login || member.name;
+      identity.append(name);
 
       if (member.access_level === "owner") {
         const badge = document.createElement("span");
@@ -544,7 +529,7 @@ async function loadProjectMembers() {
         remove.type = "button";
         remove.className = "btn tiny danger";
         remove.textContent = "Отозвать";
-        remove.onclick = () => revokeMemberAccess(member.id, member.name);
+        remove.onclick = () => revokeMemberAccess(member.id, member.login || member.name);
         row.append(identity, select, remove);
       }
       list.appendChild(row);
@@ -2252,15 +2237,19 @@ document.addEventListener("DOMContentLoaded", async () => {
     btn.onclick = () => $(btn.dataset.close).close();
   });
 
-  $("userForm").onsubmit = saveUserProfile;
-  $("loginModeBtn").onclick = () => setAuthDialogMode("login");
-  $("registerModeBtn").onclick = () => setAuthDialogMode("register");
+  $("loginForm").onsubmit = submitLogin;
+  $("registrationForm").onsubmit = submitRegistration;
+  $("openRegistrationBtn").onclick = openRegistrationDialog;
+  $("openLoginBtn").onclick = openLoginDialog;
   $("logoutBtn").onclick = logoutUser;
   $("userProfileBtn").onclick = () => {
     closeHeaderMenu();
-    openUserDialog();
+    openProfileDialog();
   };
-  $("userDialog").addEventListener("cancel", event => {
+  $("loginDialog").addEventListener("cancel", event => {
+    if (!currentUser) event.preventDefault();
+  });
+  $("registrationDialog").addEventListener("cancel", event => {
     if (!currentUser) event.preventDefault();
   });
   $("headerMenuBtn").onclick = event => {
