@@ -1,0 +1,22 @@
+{
+  "version": 1,
+  "recipe": {
+    "name": "Flask app",
+    "kind": "flask",
+    "bootstrap": [
+      "uv pip install --python .venv/bin/python -r requirements.txt"
+    ],
+    "build": [],
+    "test": [
+      ".venv/bin/pytest -q"
+    ],
+    "start": "IP_PLAN_DATA_DIR=/tmp/ip-plan-manager-hermes-verify IP_PLAN_NO_BROWSER=1 IP_PLAN_PORT=5000 .venv/bin/python app.py",
+    "port": 5000,
+    "readinessPath": "/api/health",
+    "evidence": [
+      "Detected Python project",
+      "Detected Flask dependency"
+    ]
+  },
+  "updatedAt": "2026-09-02T17:48:27.570751+00:00"
+}
