@@ -515,7 +515,9 @@ class ProjectStore:
         self, invite_token: str, pin: str, actor: dict[str, Any]
     ) -> dict[str, Any]:
         candidate = token_hash(invite_token)
-        for project in self.list_projects(strict=True):
+        # An orphaned or incomplete directory must not invalidate invitations
+        # for every healthy project in the store.
+        for project in self.list_projects():
             with self.project_lock(project["id"]):
                 project_dir = self.project_dir(project["id"])
                 meta = self._read_meta_unlocked(project_dir)

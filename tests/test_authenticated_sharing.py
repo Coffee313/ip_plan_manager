@@ -148,6 +148,33 @@ def test_creating_new_invite_does_not_invalidate_previous_link(tmp_path):
     assert accepted.get_json()["data"]["id"] == created["id"]
 
 
+def test_broken_project_directory_does_not_block_valid_invite(tmp_path):
+    data_root = tmp_path / "data"
+    store = ProjectStore(data_root)
+    (store.projects_root / "broken-project-directory").mkdir()
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец", "owner")
+    colleague = register(client, "Коллега", "colleague")
+    created = client.post(
+        "/api/projects",
+        json={"name": "Рабочий проект", "pin": "2468"},
+        headers=auth(owner["access_token"]),
+    ).get_json()["data"]["project"]
+    invite_token = client.post(
+        f"/api/projects/{created['id']}/invite",
+        headers=auth(owner["access_token"]),
+    ).get_json()["data"]["token"]
+
+    accepted = client.post(
+        f"/api/invitations/{invite_token}/accept",
+        json={"pin": "2468"},
+        headers=auth(colleague["access_token"]),
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.get_json()["data"]["id"] == created["id"]
+
+
 def test_project_id_and_pin_cannot_bypass_required_invite_link(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
     owner = register(client, "Владелец", "owner")
