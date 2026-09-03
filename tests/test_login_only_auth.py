@@ -126,8 +126,8 @@ def test_login_registration_and_profile_use_separate_dialogs_without_password():
     assert 'id="authModeButtons"' not in html
     assert html.count('placeholder="IPetrov"') == 3
     assert "Например: IPetrov" in html
-    assert 'href="/static/style.css?v=18.2"' in html
-    assert 'src="/static/app.js?v=18.2"' in html
+    assert 'href="/static/style.css?v=18.3"' in html
+    assert 'src="/static/app.js?v=18.3"' in html
     assert "async function submitLogin" in javascript
     assert "async function submitRegistration" in javascript
     assert "async function submitProfile" in javascript

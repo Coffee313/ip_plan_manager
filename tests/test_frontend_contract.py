@@ -51,6 +51,9 @@ def test_user_registration_project_sharing_and_audit_drawer_exist():
     assert "async function loadAuditLog()" in javascript
     assert "project?.can_manage_project" in javascript
     assert "project?.can_manage_access" in javascript
+    assert "project?.can_invite" in javascript
+    assert 'id="membersSection"' in html
+    assert '$("membersSection").hidden = !project?.can_manage_access' in javascript
     assert "async function createInviteLink()" in javascript
     assert "async function loadProjectMembers()" in javascript
     assert "/api/invitations/${encodeURIComponent(pendingInviteToken)}/accept" in javascript

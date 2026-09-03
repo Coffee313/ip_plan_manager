@@ -44,6 +44,7 @@ def test_project_membership_survives_store_restart(tmp_path):
             "can_delete": True,
             "access_level": "owner",
             "can_manage_access": True,
+            "can_invite": True,
             "can_manage_project": True,
         }
     ]

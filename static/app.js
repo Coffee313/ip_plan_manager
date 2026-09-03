@@ -343,7 +343,7 @@ function updateProjectControls() {
     ? "Удалить проект может только его создатель"
     : "";
   $("auditBtn").disabled = !currentUser;
-  $("manageAccessBtn").disabled = !hasAccess || !project?.can_manage_access;
+  $("manageAccessBtn").disabled = !hasAccess || !project?.can_invite;
   $("addSiteBtn").disabled = !hasAccess;
   $("generatePlanBtn").disabled = !hasAccess;
   $("undoBtn").disabled = !hasAccess;
@@ -561,9 +561,11 @@ async function loadProjectMembers() {
 
 async function openAccessDialog() {
   closeHeaderMenu();
+  const project = currentProject();
   $("inviteLinkResult").hidden = true;
+  $("membersSection").hidden = !project?.can_manage_access;
   $("accessDialog").showModal();
-  await loadProjectMembers();
+  if (project?.can_manage_access) await loadProjectMembers();
 }
 
 async function deleteCurrentProject() {

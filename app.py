@@ -253,6 +253,7 @@ def create_app(
                 access_level="owner",
                 can_delete=True,
                 can_manage_access=True,
+                can_invite=True,
                 can_manage_project=True,
             )
             return ok({"project": project, "access_token": access_token})

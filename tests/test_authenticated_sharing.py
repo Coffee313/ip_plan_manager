@@ -233,6 +233,9 @@ def test_owner_can_promote_reduced_member_to_full_and_revoke_access(tmp_path):
         headers=auth(colleague["access_token"]),
     )
     assert reduced_rename.status_code == 403
+    assert client.post(
+        f"/api/projects/{pid}/invite", headers=auth(colleague["access_token"])
+    ).status_code == 403
 
     promoted = client.put(
         f"/api/projects/{pid}/members/{colleague_member['id']}",
@@ -240,6 +243,16 @@ def test_owner_can_promote_reduced_member_to_full_and_revoke_access(tmp_path):
         headers=auth(owner["access_token"]),
     )
     assert promoted.status_code == 200
+
+    full_invite = client.post(
+        f"/api/projects/{pid}/invite", headers=auth(colleague["access_token"])
+    )
+    assert full_invite.status_code == 200
+    colleague_project = client.get(
+        "/api/projects", headers=auth(colleague["access_token"])
+    ).get_json()["data"][0]
+    assert colleague_project["can_invite"] is True
+    assert colleague_project["can_manage_access"] is False
 
     full_rename = client.put(
         f"/api/projects/{pid}", json={"name": "Разрешено"},

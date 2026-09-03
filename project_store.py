@@ -410,6 +410,7 @@ class ProjectStore:
             project["access_level"] = level
             project["can_delete"] = level == "owner"
             project["can_manage_access"] = level == "owner"
+            project["can_invite"] = level in {"owner", "full"}
             project["can_manage_project"] = level in {"owner", "full"}
             visible.append(project)
         return visible
@@ -495,7 +496,7 @@ class ProjectStore:
             return self._public_meta(meta), access_token
 
     def create_invite(self, project_id: str, actor: dict[str, Any]) -> str:
-        self.require_access(project_id, actor["id"], {"owner"})
+        self.require_access(project_id, actor["id"], {"owner", "full"})
         invite_token = secrets.token_urlsafe(32)
         with self.project_lock(project_id):
             project_dir = self.project_dir(project_id)

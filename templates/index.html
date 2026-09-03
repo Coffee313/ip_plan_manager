@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>IP Plan Manager</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=18.2">
+  <link rel="stylesheet" href="/static/style.css?v=18.3">
 </head>
 <body>
   <header class="topbar">
@@ -225,8 +225,10 @@
     <div class="access-dialog-content">
       <button id="createInviteBtn" class="btn primary" type="button">Создать и скопировать ссылку</button>
       <div id="inviteLinkResult" class="invite-link-result" hidden></div>
-      <h3>Пользователи проекта</h3>
-      <div id="membersList" class="members-list"></div>
+      <section id="membersSection">
+        <h3>Пользователи проекта</h3>
+        <div id="membersList" class="members-list"></div>
+      </section>
     </div>
     <div class="modal-actions access-dialog-actions">
       <button type="button" class="btn secondary" data-close="accessDialog">Закрыть</button>
@@ -492,6 +494,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js?v=18.2"></script>
+  <script src="/static/app.js?v=18.3"></script>
 </body>
 </html>
