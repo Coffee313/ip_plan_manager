@@ -71,3 +71,13 @@ def test_invite_link_has_automatic_and_explicit_clipboard_copy():
     assert "async function copyTextToClipboard" in javascript
     assert 'document.execCommand("copy")' in javascript
     assert '$("copyInviteBtn").onclick' in javascript
+
+
+def test_backup_dialog_is_wide_and_has_inner_spacing():
+    html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
+    css = (ROOT / "static/style.css").read_text(encoding="utf-8")
+
+    assert 'id="backupsDialog" class="modal backup-modal"' in html
+    assert ".backup-modal" in css and "width: min(760px" in css
+    assert ".backup-toolbar" in css and "padding-inline: 18px" in css
+    assert ".backups-list" in css and "margin-inline: 18px" in css

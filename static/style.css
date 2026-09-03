@@ -1116,8 +1116,17 @@ button:disabled {
 .project-tile strong, .project-tile small { display: block; }
 .project-tile small { margin-top: 5px; color: var(--muted); }
 
-.backup-toolbar { margin-bottom: 12px; }
-.backups-list { display: grid; gap: 8px; max-height: 48vh; overflow: auto; }
+.backup-modal { width: min(760px, calc(100vw - 30px)); }
+.backup-modal > .modal-header { padding: 18px 18px 12px; }
+.backup-modal > .modal-actions { padding: 0 18px 18px; }
+.backup-toolbar { margin-bottom: 12px; padding-inline: 18px; }
+.backups-list {
+  display: grid;
+  gap: 8px;
+  max-height: 48vh;
+  margin-inline: 18px;
+  overflow: auto;
+}
 .backup-item {
   display: flex;
   align-items: center;

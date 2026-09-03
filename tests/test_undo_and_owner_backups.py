@@ -198,6 +198,81 @@ def test_user_can_undo_own_deletion_of_colleague_host_and_subnet(tmp_path):
     assert restored["hosts"][0]["id"] == host_id
 
 
+def test_user_can_undo_site_deletion_with_complete_subtree(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]
+    pid = created["project"]["id"]
+    token = created["access_token"]
+    site = client.post(
+        "/api/sites", json={"name": "Площадка", "cidr": "10.0.0.0/16"},
+        headers=project_headers(owner, pid, token, 0),
+    ).get_json()
+    subnet = client.post(
+        "/api/subnets",
+        json={"parent_id": site["data"]["id"], "cidr": "10.0.1.0/24"},
+        headers=project_headers(owner, pid, token, site["revision"]),
+    ).get_json()
+    host = client.post(
+        f"/api/subnets/{subnet['data']['id']}/hosts",
+        json={"ip": "10.0.1.10", "name": "srv"},
+        headers=project_headers(owner, pid, token, subnet["revision"]),
+    ).get_json()
+    state_before, _ = store.state(pid)
+
+    deleted = client.delete(
+        f"/api/sites/{site['data']['id']}",
+        headers=project_headers(owner, pid, token, host["revision"]),
+    ).get_json()
+    restored = client.post(
+        "/api/undo",
+        headers=project_headers(owner, pid, token, deleted["revision"]),
+    )
+
+    assert restored.status_code == 200, restored.get_json()
+    state_after, _ = store.state(pid)
+    assert state_after["sites"] == state_before["sites"]
+
+
+def test_deleted_site_restore_rejects_reused_network(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    client = create_app(store).test_client()
+    owner = register(client, "Владелец")
+    created = client.post(
+        "/api/projects", json={"name": "Проект", "pin": "1234"},
+        headers={"X-User-Token": owner["access_token"]},
+    ).get_json()["data"]
+    pid = created["project"]["id"]
+    token = created["access_token"]
+    site = client.post(
+        "/api/sites", json={"name": "Удаляемая", "cidr": "10.0.0.0/16"},
+        headers=project_headers(owner, pid, token, 0),
+    ).get_json()
+    deleted = client.delete(
+        f"/api/sites/{site['data']['id']}",
+        headers=project_headers(owner, pid, token, site["revision"]),
+    ).get_json()
+    deletion_event_id = store.audit_log(pid)[0]["id"]
+    replacement = client.post(
+        "/api/sites", json={"name": "Замена", "cidr": "10.0.0.0/16"},
+        headers=project_headers(owner, pid, token, deleted["revision"]),
+    ).get_json()
+
+    restored = client.post(
+        f"/api/undo/{deletion_event_id}",
+        headers=project_headers(owner, pid, token, replacement["revision"]),
+    )
+
+    assert restored.status_code == 400
+    assert "пересекается" in restored.get_json()["error"]
+    state, _ = store.state(pid)
+    assert [site["name"] for site in state["sites"]] == ["Замена"]
+
+
 def test_deleted_subnet_can_be_restored_beside_same_addresses_in_other_vrf(tmp_path):
     store = ProjectStore(tmp_path / "data")
     client = create_app(store).test_client()

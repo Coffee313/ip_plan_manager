@@ -925,6 +925,69 @@ class ProjectStore:
             return workspace.delete_subnet(target_id)
         if kind == "host_created":
             return workspace.delete_host(target_id)
+        if kind == "site_deleted":
+            snapshot = deepcopy(values["snapshot"])
+            if snapshot.get("id") != target_id:
+                raise ValueError("Некорректные данные удаленной площадки")
+            restored_network = ipaddress.ip_network(snapshot["cidr"], strict=False)
+            workspace.validate_site_network(restored_network)
+
+            existing_ids = {
+                item_id
+                for site in workspace.sites
+                for item_id in (
+                    [site["id"]]
+                    + [subnet["id"] for subnet in site.get("subnets", [])]
+                    + [
+                        host["id"]
+                        for subnet in site.get("subnets", [])
+                        for host in subnet.get("hosts", [])
+                    ]
+                )
+            }
+            restored_ids = [snapshot["id"]]
+            restored_ids.extend(subnet["id"] for subnet in snapshot.get("subnets", []))
+            restored_ids.extend(
+                host["id"]
+                for subnet in snapshot.get("subnets", [])
+                for host in subnet.get("hosts", [])
+            )
+            if len(restored_ids) != len(set(restored_ids)) or existing_ids & set(restored_ids):
+                raise ValueError("Данные удаленной площадки уже используются")
+
+            for subnet in snapshot.get("subnets", []):
+                subnet_network = ipaddress.ip_network(subnet["cidr"], strict=False)
+                if not subnet_network.subnet_of(restored_network):
+                    raise ValueError("Подсеть находится вне удаленной площадки")
+                target_vrf = subnet_vrf(subnet)
+                for host in subnet.get("hosts", []):
+                    host_ip = ipaddress.ip_address(host["values"][0])
+                    matching = [
+                        candidate
+                        for candidate in snapshot.get("subnets", [])
+                        if subnet_vrf(candidate) == target_vrf
+                        and host_ip in ipaddress.ip_network(candidate["cidr"], strict=False)
+                    ]
+                    if not matching:
+                        raise ValueError("Хост находится вне удаленной подсети")
+                    best = max(
+                        matching,
+                        key=lambda candidate: ipaddress.ip_network(
+                            candidate["cidr"], strict=False
+                        ).prefixlen,
+                    )
+                    if best["id"] != subnet["id"]:
+                        raise ValueError("Структура удаленной площадки некорректна")
+
+            workspace.sites.append(snapshot)
+            workspace.sites.sort(
+                key=lambda site: (
+                    int(ipaddress.ip_network(site["cidr"], strict=False).network_address),
+                    ipaddress.ip_network(site["cidr"], strict=False).prefixlen,
+                )
+            )
+            workspace.save()
+            return {"restored": target_id}
         if kind == "host_deleted":
             site, subnet = workspace.find_subnet(values["subnet_id"])
             snapshot = deepcopy(values["snapshot"])

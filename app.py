@@ -782,11 +782,12 @@ def create_app(
 
     @app.delete("/api/sites/<site_id>")
     def delete_site(site_id: str):
-        deleted: dict[str, str] = {}
+        deleted: dict[str, object] = {}
 
         def action(workspace):
             site = workspace.find_site(site_id)
             deleted["name"] = site["name"]
+            deleted["snapshot"] = deepcopy(site)
             return workspace.delete_site(site_id)
 
         try:
@@ -795,9 +796,14 @@ def create_app(
                 lambda workspace, result: {
                     "action": "site_deleted",
                     "description": f"удалил(а) площадку «{deleted['name']}»",
+                    "undo": {
+                        "kind": "site_deleted",
+                        "target_id": site_id,
+                        "snapshot": deleted["snapshot"],
+                    },
                     "target_type": "site",
                     "target_id": site_id,
-                    "anchor": f"site-{site_id}",
+                    "anchor": "project-root",
                 },
             )
         except ProjectAccessDenied as exc:
