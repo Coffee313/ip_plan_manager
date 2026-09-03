@@ -94,6 +94,7 @@ EOF
 $SUDO systemctl daemon-reload
 $SUDO systemctl enable --now ip-plan-manager.service
 $SUDO systemctl enable --now ip-plan-manager-backup.timer
+$SUDO systemctl restart ip-plan-manager.service
 
 echo
 echo "IP Plan Manager installed."

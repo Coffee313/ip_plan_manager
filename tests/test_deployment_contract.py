@@ -9,6 +9,7 @@ def test_systemd_service_uses_restrictive_file_permissions_and_hardening():
     assert "PrivateDevices=true" in installer
     assert "ProtectSystem=strict" in installer
     assert "ReadWritePaths=$APP_DIR/data" in installer
+    assert "systemctl restart ip-plan-manager.service" in installer
 
 
 def test_nginx_example_documents_https_and_security_headers():
