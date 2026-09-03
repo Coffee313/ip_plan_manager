@@ -61,6 +61,18 @@ def test_backup_fails_instead_of_silently_omitting_corrupt_project(tmp_path):
     assert list(store.backups_root.glob("ipplan-backup-*.zip")) == []
 
 
+def test_backup_ignores_orphan_directory_without_project_metadata(tmp_path):
+    store = ProjectStore(tmp_path / "data")
+    project, _ = store.create_project("P", "1234")
+    (store.projects_root / "orphan-directory").mkdir()
+
+    backup_path = create_backup(store=store)
+
+    with zipfile.ZipFile(backup_path) as archive:
+        manifest = json.loads(archive.read("manifest.json"))
+    assert manifest["project_ids"] == [project["id"]]
+
+
 def test_restore_validates_backup_before_replacing_current_projects(tmp_path):
     store = ProjectStore(tmp_path / "data")
     store.create_project("Current", "1234")

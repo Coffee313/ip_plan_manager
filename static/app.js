@@ -473,6 +473,34 @@ async function openProject(projectId) {
   await loadProjects(currentProjectId);
 }
 
+async function copyTextToClipboard(text) {
+  if (navigator.clipboard?.writeText && window.isSecureContext) {
+    await navigator.clipboard.writeText(text);
+    return;
+  }
+  const fallback = document.createElement("textarea");
+  fallback.value = text;
+  fallback.setAttribute("readonly", "");
+  fallback.style.position = "fixed";
+  fallback.style.opacity = "0";
+  document.body.appendChild(fallback);
+  fallback.select();
+  const copied = document.execCommand("copy");
+  fallback.remove();
+  if (!copied) throw new Error("Копирование не поддерживается браузером");
+}
+
+async function copyInviteLink() {
+  const link = $("inviteLinkResult").textContent.trim();
+  if (!link) return;
+  try {
+    await copyTextToClipboard(link);
+    toast("Ссылка-приглашение скопирована");
+  } catch (_) {
+    toast("Не удалось скопировать ссылку автоматически", true);
+  }
+}
+
 async function createInviteLink() {
   if (!currentProjectId) return;
   try {
@@ -481,10 +509,10 @@ async function createInviteLink() {
     url.search = "";
     url.hash = "";
     url.searchParams.set("invite", result.token);
-    $("inviteLinkResult").hidden = false;
     $("inviteLinkResult").textContent = url.toString();
+    $("inviteLinkActions").hidden = false;
     try {
-      await navigator.clipboard.writeText(url.toString());
+      await copyTextToClipboard(url.toString());
       toast("Ссылка скопирована. Передайте коллеге ссылку и PIN отдельно.");
     } catch (_) {
       toast("Ссылка создана — скопируйте её из окна доступа");
@@ -562,7 +590,7 @@ async function loadProjectMembers() {
 async function openAccessDialog() {
   closeHeaderMenu();
   const project = currentProject();
-  $("inviteLinkResult").hidden = true;
+  $("inviteLinkActions").hidden = true;
   $("membersSection").hidden = !project?.can_manage_access;
   $("accessDialog").showModal();
   if (project?.can_manage_access) await loadProjectMembers();
@@ -2282,6 +2310,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   };
   $("manageAccessBtn").onclick = openAccessDialog;
   $("createInviteBtn").onclick = createInviteLink;
+  $("copyInviteBtn").onclick = copyInviteLink;
   $("closeAuditBtn").onclick = closeAuditPanel;
   $("collapseAllBtn").onclick = collapseAllSubnets;
   $("undoBtn").onclick = undoOwnChange;

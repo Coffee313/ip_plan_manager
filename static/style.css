@@ -332,8 +332,15 @@ body {
 #accessDialog > .modal-header { padding: 18px 18px 12px; }
 .access-dialog-content h3 { margin: 18px 0 10px; font-size: 14px; }
 .access-dialog-actions { padding: 0 18px 18px; }
-.invite-link-result {
+.invite-link-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
   margin-top: 10px;
+}
+.invite-link-actions[hidden] { display: none; }
+.invite-link-result {
   padding: 10px;
   border-radius: 8px;
   background: #f3f7f5;

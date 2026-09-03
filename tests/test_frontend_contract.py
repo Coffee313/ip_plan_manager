@@ -61,3 +61,13 @@ def test_user_registration_project_sharing_and_audit_drawer_exist():
     assert "row-${host.id}" in javascript
     assert ".audit-panel" in css and "position: fixed" in css
     assert "body.audit-open .app-layout" in css
+
+
+def test_invite_link_has_automatic_and_explicit_clipboard_copy():
+    html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
+    javascript = (ROOT / "static/app.js").read_text(encoding="utf-8")
+
+    assert 'id="copyInviteBtn"' in html
+    assert "async function copyTextToClipboard" in javascript
+    assert 'document.execCommand("copy")' in javascript
+    assert '$("copyInviteBtn").onclick' in javascript

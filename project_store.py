@@ -429,6 +429,11 @@ class ProjectStore:
         for project_dir in self.projects_root.iterdir():
             if not project_dir.is_dir():
                 continue
+            # Empty/orphaned directories are not projects. They can remain
+            # after an interrupted legacy operation and must not block strict
+            # maintenance jobs such as backups.
+            if not self._meta_path(project_dir).is_file():
+                continue
             try:
                 meta = self._read_meta_unlocked(project_dir)
                 if meta.get("id") != project_dir.name:
