@@ -246,7 +246,7 @@ def restore_project_backup(
                 restored_meta = store._read_meta_unlocked(staged)
                 for key in (
                     "id", "creator_user_id", "pin_hash", "access_token_hashes",
-                    "members", "invite_token_hash",
+                    "members", "invite_token_hash", "invite_token_hashes",
                 ):
                     restored_meta[key] = current_meta.get(key)
                 restored_meta["revision"] = int(current_meta.get("revision", 0)) + 1

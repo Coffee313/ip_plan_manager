@@ -119,6 +119,35 @@ def test_invite_link_and_pin_add_project_to_colleagues_personal_project_list(tmp
     ]
 
 
+def test_creating_new_invite_does_not_invalidate_previous_link(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    owner = register(client, "Владелец", "owner")
+    colleague = register(client, "Коллега", "colleague")
+    created = client.post(
+        "/api/projects",
+        json={"name": "Проект", "pin": "2468"},
+        headers=auth(owner["access_token"]),
+    ).get_json()["data"]["project"]
+
+    first_link = client.post(
+        f"/api/projects/{created['id']}/invite",
+        headers=auth(owner["access_token"]),
+    ).get_json()["data"]["token"]
+    client.post(
+        f"/api/projects/{created['id']}/invite",
+        headers=auth(owner["access_token"]),
+    )
+
+    accepted = client.post(
+        f"/api/invitations/{first_link}/accept",
+        json={"pin": "2468"},
+        headers=auth(colleague["access_token"]),
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.get_json()["data"]["id"] == created["id"]
+
+
 def test_project_id_and_pin_cannot_bypass_required_invite_link(tmp_path):
     client = create_app(ProjectStore(tmp_path / "data")).test_client()
     owner = register(client, "Владелец", "owner")

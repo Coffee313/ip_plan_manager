@@ -197,6 +197,34 @@ class ProjectStore:
                 return self._public_user(user), access_token
         raise UserAccessDenied("Пользователь с таким корпоративным логином не найден")
 
+    def update_user_login(self, token: str, login: str) -> dict[str, Any]:
+        login = validate_login(login)
+        candidate = token_hash(token)
+        with self.users_lock:
+            users = self._read_users_unlocked()
+            current = None
+            for user in users:
+                hashes = list(user.get("session_token_hashes", []))
+                if user.get("token_hash"):
+                    hashes.append(user["token_hash"])
+                if any(hmac.compare_digest(candidate, stored) for stored in hashes):
+                    current = user
+                    break
+            if current is None:
+                raise UserAccessDenied("Профиль пользователя не найден")
+            if any(
+                user["id"] != current["id"]
+                and user.get("login", "").casefold() == login
+                for user in users
+            ):
+                raise ValueError("Пользователь с таким логином уже зарегистрирован")
+            current["login"] = login
+            current["name"] = login
+            current["updated_at"] = utc_now()
+            current.pop("password_hash", None)
+            self._write_users_unlocked(users)
+            return self._public_user(current)
+
     def complete_user_registration(
         self, token: str, login: str
     ) -> tuple[dict[str, Any], str]:
@@ -472,7 +500,12 @@ class ProjectStore:
         with self.project_lock(project_id):
             project_dir = self.project_dir(project_id)
             meta = self._read_meta_unlocked(project_dir)
-            meta["invite_token_hash"] = token_hash(invite_token)
+            invite_hashes = list(meta.get("invite_token_hashes") or [])
+            legacy_hash = meta.pop("invite_token_hash", None)
+            if legacy_hash:
+                invite_hashes.append(legacy_hash)
+            invite_hashes.append(token_hash(invite_token))
+            meta["invite_token_hashes"] = list(dict.fromkeys(invite_hashes))[-20:]
             meta["updated_at"] = utc_now()
             self._write_meta_unlocked(project_dir, meta)
         return invite_token
@@ -485,8 +518,14 @@ class ProjectStore:
             with self.project_lock(project["id"]):
                 project_dir = self.project_dir(project["id"])
                 meta = self._read_meta_unlocked(project_dir)
-                stored = meta.get("invite_token_hash", "")
-                if not stored or not hmac.compare_digest(candidate, stored):
+                stored_hashes = list(meta.get("invite_token_hashes") or [])
+                legacy_hash = meta.get("invite_token_hash")
+                if legacy_hash:
+                    stored_hashes.append(legacy_hash)
+                if not any(
+                    hmac.compare_digest(candidate, stored)
+                    for stored in stored_hashes
+                ):
                     continue
                 if not verify_pin(pin, meta.get("pin_hash", "")):
                     raise ProjectAccessDenied("Неверный PIN")

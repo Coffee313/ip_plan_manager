@@ -353,6 +353,12 @@ def test_only_owner_can_create_and_restore_project_backup(tmp_path):
     assert made.status_code == 200
     backup_name = made.get_json()["data"]["filename"]
 
+    client.post(
+        f"/api/projects/{pid}/invite",
+        headers={"X-User-Token": owner["access_token"]},
+    )
+    current_invites = store.get_meta(pid)["invite_token_hashes"]
+
     current_revision = store.get_revision(pid)
     store.mutate(pid, lambda workspace: workspace.create_site({"name": "После", "cidr": "10.0.0.0/16"}), current_revision)
     restored = client.post(
@@ -363,6 +369,7 @@ def test_only_owner_can_create_and_restore_project_backup(tmp_path):
     state, _ = store.state(pid)
     assert state["sites"] == []
     assert store.verify_access(pid, created["access_token"]) is None
+    assert store.get_meta(pid)["invite_token_hashes"] == current_invites
 
 
 def test_deployment_runs_automatic_backup_once_per_day():

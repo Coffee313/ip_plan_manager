@@ -217,6 +217,17 @@ def create_app(
         except UserAccessDenied as exc:
             return fail(exc, 401)
 
+    @app.put("/api/users/me")
+    def update_current_user():
+        try:
+            payload = request.get_json(force=True)
+            token = request.headers.get("X-User-Token", "")
+            return ok(store.update_user_login(token, payload.get("login", "")))
+        except UserAccessDenied as exc:
+            return fail(exc, 401)
+        except Exception as exc:
+            return fail(exc)
+
     @app.get("/api/projects")
     def list_projects():
         try:

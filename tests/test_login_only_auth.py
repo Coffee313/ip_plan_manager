@@ -62,6 +62,50 @@ def test_existing_session_migrates_password_era_user_to_login_only(tmp_path):
     assert "password_hash" not in migrated
 
 
+def test_user_can_change_login_and_it_persists_across_restart(tmp_path):
+    data_root = tmp_path / "data"
+    store = ProjectStore(data_root)
+    client = create_app(store).test_client()
+    registration = client.post(
+        "/api/auth/register", json={"login": "old.login"}
+    ).get_json()["data"]
+    headers = {"X-User-Token": registration["access_token"]}
+
+    changed = client.put(
+        "/api/users/me", json={"login": "New.Login"}, headers=headers
+    )
+
+    assert changed.status_code == 200
+    assert changed.get_json()["data"]["id"] == registration["user"]["id"]
+    assert changed.get_json()["data"]["login"] == "new.login"
+    assert changed.get_json()["data"]["name"] == "new.login"
+    assert client.post("/api/auth/login", json={"login": "old.login"}).status_code == 401
+    restarted = create_app(ProjectStore(data_root)).test_client()
+    assert restarted.post(
+        "/api/auth/login", json={"login": "NEW.LOGIN"}
+    ).status_code == 200
+    assert restarted.get("/api/users/me", headers=headers).get_json()["data"][
+        "login"
+    ] == "new.login"
+
+
+def test_user_cannot_change_login_to_an_existing_login(tmp_path):
+    client = create_app(ProjectStore(tmp_path / "data")).test_client()
+    first = client.post(
+        "/api/auth/register", json={"login": "first.user"}
+    ).get_json()["data"]
+    client.post("/api/auth/register", json={"login": "second.user"})
+
+    response = client.put(
+        "/api/users/me",
+        json={"login": "SECOND.USER"},
+        headers={"X-User-Token": first["access_token"]},
+    )
+
+    assert response.status_code == 400
+    assert "зарегистрирован" in response.get_json()["error"].lower()
+
+
 def test_login_registration_and_profile_use_separate_dialogs_without_password():
     html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
     javascript = (ROOT / "static/app.js").read_text(encoding="utf-8")
@@ -75,13 +119,19 @@ def test_login_registration_and_profile_use_separate_dialogs_without_password():
     assert 'id="registrationLogin"' in html
     assert 'id="openLoginBtn"' in html
     assert 'id="profileDialog"' in html
+    assert 'id="profileForm"' in html
     assert 'id="profileLogin"' in html
+    assert 'id="saveProfileBtn"' in html
     assert 'id="userPassword"' not in html
     assert 'id="authModeButtons"' not in html
-    assert 'href="/static/style.css?v=18.1"' in html
-    assert 'src="/static/app.js?v=18.1"' in html
+    assert html.count('placeholder="IPetrov"') == 3
+    assert "Например: IPetrov" in html
+    assert 'href="/static/style.css?v=18.2"' in html
+    assert 'src="/static/app.js?v=18.2"' in html
     assert "async function submitLogin" in javascript
     assert "async function submitRegistration" in javascript
+    assert "async function submitProfile" in javascript
+    assert '"/api/users/me"' in javascript
     assert "name.textContent = member.login || member.name;" in javascript
     assert '"/api/auth/login"' in javascript
     assert '"/api/auth/register"' in javascript

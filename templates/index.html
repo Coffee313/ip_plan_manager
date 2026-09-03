@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>IP Plan Manager</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=18.1">
+  <link rel="stylesheet" href="/static/style.css?v=18.2">
 </head>
 <body>
   <header class="topbar">
@@ -114,7 +114,7 @@
       </div>
       <div class="field full">
         <label>Корпоративный логин *</label>
-        <input id="loginLogin" required maxlength="80" autocomplete="username" placeholder="ivanov.ii">
+        <input id="loginLogin" required maxlength="80" autocomplete="username" placeholder="IPetrov">
       </div>
       <div class="modal-actions auth-dialog-actions">
         <button id="openRegistrationBtn" type="button" class="btn secondary">Регистрация</button>
@@ -133,8 +133,8 @@
       </div>
       <div class="field full">
         <label>Корпоративный логин *</label>
-        <input id="registrationLogin" required maxlength="80" autocomplete="username" placeholder="ivanov.ii">
-        <small>Например: ivanov.ii или i.ivanov — в том виде, как логин используется в компании.</small>
+        <input id="registrationLogin" required maxlength="80" autocomplete="username" placeholder="IPetrov">
+        <small>Например: IPetrov — в том виде, как логин используется в компании.</small>
       </div>
       <div class="modal-actions auth-dialog-actions">
         <button id="openLoginBtn" type="button" class="btn secondary">Назад ко входу</button>
@@ -144,20 +144,23 @@
   </dialog>
 
   <dialog id="profileDialog" class="modal small-modal">
-    <div class="modal-header auth-profile-header">
-      <div>
-        <h2>Личный кабинет</h2>
-        <p>Вы вошли под корпоративным логином:</p>
+    <form method="dialog" id="profileForm">
+      <div class="modal-header">
+        <div>
+          <h2>Личный кабинет</h2>
+          <p>Здесь можно изменить корпоративный логин.</p>
+        </div>
+        <button type="button" class="icon-btn" data-close="profileDialog" aria-label="Закрыть">×</button>
       </div>
-      <button type="button" class="icon-btn" data-close="profileDialog" aria-label="Закрыть">×</button>
-    </div>
-    <div class="auth-profile-content">
-      <input id="profileLogin" readonly aria-label="Корпоративный логин">
-    </div>
-    <div class="modal-actions auth-profile-actions">
-      <button id="logoutBtn" type="button" class="btn secondary">Выйти</button>
-      <button type="button" class="btn primary" data-close="profileDialog">Закрыть</button>
-    </div>
+      <div class="field full">
+        <label>Корпоративный логин *</label>
+        <input id="profileLogin" required maxlength="80" autocomplete="username" placeholder="IPetrov">
+      </div>
+      <div class="modal-actions auth-dialog-actions">
+        <button id="logoutBtn" type="button" class="btn secondary">Выйти</button>
+        <button id="saveProfileBtn" type="submit" class="btn primary">Сохранить</button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="projectDialog" class="modal small-modal">
@@ -489,6 +492,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js?v=18.1"></script>
+  <script src="/static/app.js?v=18.2"></script>
 </body>
 </html>

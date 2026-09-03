@@ -180,6 +180,22 @@ async function submitRegistration(event) {
   }
 }
 
+async function submitProfile(event) {
+  event.preventDefault();
+  try {
+    currentUser = await api("/api/users/me", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({login: $("profileLogin").value.trim()})
+    });
+    updateUserControls();
+    $("profileDialog").close();
+    toast("Логин изменён");
+  } catch (error) {
+    toast(error.message, true);
+  }
+}
+
 async function ensureUserProfile() {
   if (userToken) {
     try {
@@ -2239,6 +2255,7 @@ document.addEventListener("DOMContentLoaded", async () => {
 
   $("loginForm").onsubmit = submitLogin;
   $("registrationForm").onsubmit = submitRegistration;
+  $("profileForm").onsubmit = submitProfile;
   $("openRegistrationBtn").onclick = openRegistrationDialog;
   $("openLoginBtn").onclick = openLoginDialog;
   $("logoutBtn").onclick = logoutUser;
