@@ -83,6 +83,15 @@ def test_undo_is_a_prominent_corner_action_with_safe_ctrl_z_hotkey():
     assert "event.repeat" in javascript
 
 
+def test_toast_and_plan_content_clear_the_fixed_undo_button():
+    css = (ROOT / "static/style.css").read_text(encoding="utf-8")
+
+    toast_rule = css.split(".toast {", 1)[1].split("}", 1)[0]
+    content_rule = css.split(".content {", 1)[1].split("}", 1)[0]
+    assert "bottom: 74px" in toast_rule
+    assert "padding: 18px 18px 90px" in content_rule
+
+
 def test_application_has_an_svg_favicon():
     html = (ROOT / "templates/index.html").read_text(encoding="utf-8")
     favicon = ROOT / "static/favicon.svg"

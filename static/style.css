@@ -191,7 +191,7 @@ body {
 .subnet-box { background: #fff; }
 .host-box { background: var(--host); }
 
-.content { min-width: 0; padding: 18px; }
+.content { min-width: 0; padding: 18px 18px 90px; }
 .empty-card {
   background: #fff;
   border: 1px solid var(--line);
@@ -372,7 +372,7 @@ body {
 .toast {
   position: fixed;
   right: 18px;
-  bottom: 18px;
+  bottom: 74px;
   min-width: 250px;
   max-width: 430px;
   background: #18202a;
