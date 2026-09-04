@@ -159,17 +159,55 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
     for raw_vpc in raw_workloads:
         if not isinstance(raw_vpc, dict):
             raise ValueError("Некорректные параметры VPC виртуальных машин")
-        layout, zone_size = _k2_zone_layout([
-            ("подсеть виртуальных машин", _k2_prefix(raw_vpc.get("vm_prefix"), 24)),
-            ("транзитная подсеть к TGW", _k2_prefix(raw_vpc.get("tgw_prefix"), 28)),
-        ])
+        raw_zone_configs = raw_vpc.get("zone_configs")
+        if raw_zone_configs is None:
+            zone_configs = [
+                (index, _k2_prefix(raw_vpc.get("vm_prefix"), 24))
+                for index in range(len(zones))
+            ]
+        else:
+            if not isinstance(raw_zone_configs, list) or not raw_zone_configs:
+                raise ValueError("Выберите хотя бы одну зону для VPC виртуальных машин")
+            zone_configs = []
+            for raw_config in raw_zone_configs:
+                if not isinstance(raw_config, dict):
+                    raise ValueError("Некорректная настройка зоны VPC виртуальных машин")
+                zone_index = raw_config.get("zone_index")
+                if isinstance(zone_index, bool) or not isinstance(zone_index, int):
+                    raise ValueError("Некорректный выбор зон для VPC виртуальных машин")
+                zone_configs.append((
+                    zone_index,
+                    _k2_prefix(raw_config.get("vm_prefix"), 24),
+                ))
+            zone_configs.sort(key=lambda item: item[0])
+            zone_indices = [item[0] for item in zone_configs]
+            if (
+                len(set(zone_indices)) != len(zone_indices)
+                or zone_indices[0] < 0
+                or zone_indices[-1] >= len(zones)
+            ):
+                raise ValueError("Некорректный выбор зон для VPC виртуальных машин")
+        tgw_prefix = _k2_prefix(raw_vpc.get("tgw_prefix"), 28)
+        layouts: dict[int, list[tuple[int, int, str]]] = {}
+        zone_sizes = []
+        for zone_index, vm_prefix in zone_configs:
+            layout, layout_size = _k2_zone_layout([
+                ("подсеть виртуальных машин", vm_prefix),
+                ("транзитная подсеть к TGW", tgw_prefix),
+            ])
+            layouts[zone_index] = layout
+            zone_sizes.append(layout_size)
+        zone_size = max(zone_sizes)
+        zone_indices = [item[0] for item in zone_configs]
+        scoped_zones = [zones[index] for index in zone_indices]
         requests.append({
-            "prefix": _k2_container_prefix(zone_size, len(zones)),
+            "prefix": _k2_container_prefix(zone_size, len(scoped_zones)),
             "kind": "workload",
             "name": unique_vpc_name(raw_vpc.get("name")),
-            "zones": zones,
+            "zones": scoped_zones,
+            "zone_indices": zone_indices,
             "zone_size": zone_size,
-            "layout": layout,
+            "layouts": layouts,
         })
 
     for raw_vpc in raw_appliances:
@@ -324,9 +362,13 @@ def _generate_k2_cloud_plan(payload: dict[str, Any]) -> dict[str, Any]:
         ))
 
         if request["kind"] == "workload":
-            for zone_index, zone in enumerate(request_zones):
-                zone_base = int(block.network_address) + zone_index * request["zone_size"]
-                for offset, subnet_prefix, description in request["layout"]:
+            for zone_position, (zone_index, zone) in enumerate(
+                zip(request["zone_indices"], request_zones, strict=True)
+            ):
+                zone_base = (
+                    int(block.network_address) + zone_position * request["zone_size"]
+                )
+                for offset, subnet_prefix, description in request["layouts"][zone_index]:
                     network = ipaddress.IPv4Network((zone_base + offset, subnet_prefix))
                     generated_subnets.append(_k2_subnet(
                         network, vpc_name, zone, site_name, f"{zone} - {description}",

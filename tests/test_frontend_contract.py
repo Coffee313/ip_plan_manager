@@ -81,3 +81,14 @@ def test_backup_dialog_is_wide_and_has_inner_spacing():
     assert ".backup-modal" in css and "width: min(760px" in css
     assert ".backup-toolbar" in css and "padding-inline: 18px" in css
     assert ".backups-list" in css and "margin-inline: 18px" in css
+
+
+def test_k2_workload_vpc_has_per_zone_vm_selection_and_prefix_controls():
+    javascript = (ROOT / "static/app.js").read_text(encoding="utf-8")
+    css = (ROOT / "static/style.css").read_text(encoding="utf-8")
+
+    assert "data-k2-workload-zone-checkbox" in javascript
+    assert "data-k2-workload-zone-prefix" in javascript
+    assert "zone_configs:" in javascript
+    assert "syncK2WorkloadRow" in javascript
+    assert ".k2-workload-zone-grid" in css

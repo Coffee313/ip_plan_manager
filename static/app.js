@@ -1479,9 +1479,18 @@ function generatorSiteMarkup(index) {
 function k2WorkloadVpcMarkup(name = "VPC INFRA", vmPrefix = 24, tgwPrefix = 28) {
   return `<div class="k2-vpc-row k2-workload-row" data-k2-workload-vpc>
     <label>Название VPC *<input data-k2-vpc-name required value="${esc(name)}" placeholder="VPC INFRA"></label>
-    <label>Маска VM<input data-k2-vm-prefix type="number" min="1" max="28" required value="${esc(vmPrefix)}"></label>
     <label>Маска TGW<input data-k2-tgw-prefix type="number" min="1" max="28" required value="${esc(tgwPrefix)}"></label>
     <button class="icon-btn generator-remove" type="button" data-remove-k2-vpc aria-label="Удалить VPC">×</button>
+    <fieldset class="k2-workload-zone-grid">
+      <legend>Подсети VM по зонам</legend>
+      ${[0, 1, 2].map(index => `<div class="k2-workload-zone-choice" data-k2-workload-zone-choice>
+        <label class="k2-checkbox">
+          <input data-k2-workload-zone-checkbox type="checkbox" value="${index}" checked>
+          <span data-k2-zone-label>Зона ${index + 1}</span>
+        </label>
+        <label>Маска VM<input data-k2-workload-zone-prefix data-k2-vm-prefix type="number" min="1" max="28" required value="${esc(vmPrefix)}"></label>
+      </div>`).join("")}
+    </fieldset>
   </div>`;
 }
 
@@ -1553,6 +1562,24 @@ function syncK2ApplianceRow(row) {
   });
 }
 
+function syncK2WorkloadRow(row, zoneCount) {
+  const checkboxes = [...row.querySelectorAll("[data-k2-workload-zone-checkbox]")];
+  checkboxes.forEach((checkbox, index) => {
+    const active = index < zoneCount;
+    const choice = checkbox.closest("[data-k2-workload-zone-choice]");
+    checkbox.disabled = !active;
+    choice.hidden = !active;
+    choice.querySelector("[data-k2-workload-zone-prefix]").disabled =
+      !active || !checkbox.checked;
+  });
+  const activeCheckboxes = checkboxes.filter(checkbox => !checkbox.disabled);
+  if (!activeCheckboxes.some(checkbox => checkbox.checked)) {
+    activeCheckboxes[0].checked = true;
+    activeCheckboxes[0].closest("[data-k2-workload-zone-choice]")
+      .querySelector("[data-k2-workload-zone-prefix]").disabled = false;
+  }
+}
+
 function syncK2ZoneOptions() {
   const zoneCount = Number($("k2ZoneCount").value);
   const zoneNames = [
@@ -1560,6 +1587,14 @@ function syncK2ZoneOptions() {
     $("k2SecondaryZone").value.trim(),
     $("k2TertiaryZone").value.trim()
   ];
+  $("k2WorkloadVpcs").querySelectorAll("[data-k2-workload-vpc]").forEach(row => {
+    row.querySelectorAll("[data-k2-workload-zone-checkbox]").forEach((checkbox, index) => {
+      checkbox.closest("[data-k2-workload-zone-choice]")
+        .querySelector("[data-k2-zone-label]").textContent =
+          zoneNames[index] || `Зона ${index + 1}`;
+    });
+    syncK2WorkloadRow(row, zoneCount);
+  });
   $("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]").forEach(row => {
     const checkboxes = [...row.querySelectorAll("[data-k2-zone-checkbox]")];
     checkboxes.forEach((checkbox, index) => {
@@ -1646,7 +1681,13 @@ function k2CloudPayload() {
       ].slice(0, zoneCount),
       workload_vpcs: [...$("k2WorkloadVpcs").querySelectorAll("[data-k2-workload-vpc]")].map(row => ({
         name: row.querySelector("[data-k2-vpc-name]").value.trim(),
-        vm_prefix: row.querySelector("[data-k2-vm-prefix]").value,
+        zone_configs: [...row.querySelectorAll("[data-k2-workload-zone-checkbox]")]
+          .filter(checkbox => checkbox.checked && !checkbox.disabled)
+          .map(checkbox => ({
+            zone_index: Number(checkbox.value),
+            vm_prefix: checkbox.closest("[data-k2-workload-zone-choice]")
+              .querySelector("[data-k2-workload-zone-prefix]").value
+          })),
         tgw_prefix: row.querySelector("[data-k2-tgw-prefix]").value
       })),
       appliance_vpcs: [...$("k2ApplianceVpcs").querySelectorAll("[data-k2-appliance-vpc]")].map(row => ({
@@ -2345,6 +2386,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     $("k2WorkloadVpcs").insertAdjacentHTML(
       "beforeend", k2WorkloadVpcMarkup(`VPC VM ${index}`)
     );
+    syncK2ZoneOptions();
     invalidateGeneratorPreview();
   };
   $("addK2ApplianceVpcBtn").onclick = () => {
@@ -2404,6 +2446,10 @@ document.addEventListener("DOMContentLoaded", async () => {
       $("k2TransitPrefix").disabled = !$("k2IncludeTransit").checked;
     }
     if (event.target === $("k2ZoneCount")) syncK2ZoneCount();
+    const workloadRow = event.target.closest("[data-k2-workload-vpc]");
+    if (workloadRow && event.target.matches("[data-k2-workload-zone-checkbox]")) {
+      syncK2WorkloadRow(workloadRow, Number($("k2ZoneCount").value));
+    }
     const applianceRow = event.target.closest("[data-k2-appliance-vpc]");
     if (applianceRow && event.target.matches(
       "[data-k2-cluster], [data-k2-zone-checkbox], [data-k2-firewall-ravpn]"

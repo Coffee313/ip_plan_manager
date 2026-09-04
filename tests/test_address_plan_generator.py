@@ -265,6 +265,74 @@ def test_k2_cloud_supports_three_zones_and_custom_subnet_masks():
     assert {item["cidr"].split("/")[1] for item in transit} == {"25"}
 
 
+def test_k2_cloud_workload_vpc_selects_non_contiguous_zones_and_vm_mask_per_zone():
+    payload = {
+        "mode": "k2_cloud",
+        "k2_cloud": {
+            "name": "K2 Cloud",
+            "supernet": "10.0.0.0/8",
+            "zones": ["ZONE-A", "ZONE-B", "ZONE-C"],
+            "workload_vpcs": [{
+                "name": "VPC VM",
+                "zone_configs": [
+                    {"zone_index": 0, "vm_prefix": 25},
+                    {"zone_index": 2, "vm_prefix": 26},
+                ],
+                "tgw_prefix": 28,
+            }],
+            "appliance_vpcs": [],
+            "include_transit_vpc": False,
+        },
+    }
+
+    result = generate_address_plan(payload)
+    workload = [
+        item for item in result["sites"][0]["subnets"]
+        if item["vrf"] == "VPC VM"
+    ]
+
+    assert workload[0]["zone"] == "ZONE-A, ZONE-C"
+    assert [(item["zone"], item["cidr"].split("/")[1]) for item in workload[1:]] == [
+        ("ZONE-A", "25"),
+        ("ZONE-A", "28"),
+        ("ZONE-C", "26"),
+        ("ZONE-C", "28"),
+    ]
+
+
+def test_k2_cloud_rejects_invalid_workload_zone_configs():
+    invalid_configs = [
+        [],
+        [{"zone_index": True, "vm_prefix": 24}],
+        [{"zone_index": 2, "vm_prefix": 24}],
+        [
+            {"zone_index": 0, "vm_prefix": 24},
+            {"zone_index": 0, "vm_prefix": 25},
+        ],
+    ]
+
+    for zone_configs in invalid_configs:
+        payload = k2_cloud_payload()
+        payload["k2_cloud"]["workload_vpcs"][0]["zone_configs"] = zone_configs
+        try:
+            generate_address_plan(payload)
+        except ValueError as error:
+            assert "зон" in str(error).lower()
+        else:
+            raise AssertionError("Ожидалась ошибка выбора зон workload VPC")
+
+    invalid_prefix = k2_cloud_payload()
+    invalid_prefix["k2_cloud"]["workload_vpcs"][0]["zone_configs"] = [
+        {"zone_index": 0, "vm_prefix": 29},
+    ]
+    try:
+        generate_address_plan(invalid_prefix)
+    except ValueError as error:
+        assert "/1 до /28" in str(error)
+    else:
+        raise AssertionError("Ожидался запрет маски /29 для VM в зоне")
+
+
 def test_k2_cloud_supports_one_availability_zone():
     payload = k2_cloud_payload()
     payload["k2_cloud"]["zones"] = ["ONLY-ZONE"]

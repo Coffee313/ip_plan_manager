@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>IP Plan Manager</title>
   <link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-  <link rel="stylesheet" href="/static/style.css?v=18.6">
+  <link rel="stylesheet" href="/static/style.css?v=18.7">
 </head>
 <body>
   <header class="topbar">
@@ -285,7 +285,7 @@
       <section id="k2CloudGeneratorPanel" class="k2-cloud-panel" hidden>
         <div class="k2-cloud-note">
           <strong>K2 Cloud</strong>
-          <span>Выберите от одной до трех зон и настройте маски VM, outside, inside, interlink и транзитных подсетей к TGW.</span>
+          <span>Выберите от одной до трех зон и настройте зоны и маски VM, outside, inside, interlink и транзитных подсетей к TGW.</span>
         </div>
         <div class="generator-site-fields k2-cloud-fields">
           <label>Название площадки *<input id="k2SiteName" required value="K2 Cloud"></label>
@@ -305,7 +305,7 @@
         <div class="k2-vpc-section">
           <div class="generator-groups-heading">
             <strong>VPC виртуальных машин</strong>
-            <span>Маски VM и подключения к TGW задаются отдельно для каждого VPC</span>
+            <span>Зоны и маски VM задаются отдельно для каждого VPC</span>
           </div>
           <div id="k2WorkloadVpcs" class="k2-vpc-list"></div>
           <button id="addK2WorkloadVpcBtn" class="btn tiny secondary" type="button">+ VPC виртуальных машин</button>
@@ -497,6 +497,6 @@
 
   <div id="toast" class="toast"></div>
 
-  <script src="/static/app.js?v=18.6"></script>
+  <script src="/static/app.js?v=18.7"></script>
 </body>
 </html>
